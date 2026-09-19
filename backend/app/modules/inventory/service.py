@@ -328,3 +328,62 @@ class InventoryService:
             )
             self.db.flush()
             return [inventory_payload(source), inventory_payload(destination)]
+
+    def dispatch_stock(
+        self,
+        *,
+        product_id: int,
+        warehouse_id: int,
+        quantity: Decimal,
+        reference_id: int,
+        actor: User,
+    ) -> tuple[Decimal, Decimal]:
+        """Decrement stock as goods physically leave for a shipment dispatch.
+
+        Reused by the shipment service inside its own transaction (this method
+        never commits): it locks the ``(product, warehouse)`` row FOR UPDATE,
+        validates availability, decrements the quantity, appends a
+        ``SHIPMENT_DISPATCH`` inventory transaction, and re-evaluates the
+        derived LOW_STOCK alert. A shortage raises
+        :class:`~app.common.exceptions.InsufficientInventoryError`, which rolls
+        back the caller's whole unit of work.
+
+        Returns ``(old_quantity, new_quantity)`` so the caller can audit them.
+        """
+        row = self.repo.get_for_update(product_id, warehouse_id)
+        if row is None or row.quantity < quantity:
+            raise InsufficientInventoryError(
+                "Insufficient stock to dispatch for shipment",
+                details={
+                    "product_id": product_id,
+                    "warehouse_id": warehouse_id,
+                    "available": str(row.quantity) if row is not None else "0",
+                    "required": str(quantity),
+                },
+            )
+
+        product = self.products.get_by_id(product_id)
+        warehouse = self.warehouses.get_by_id(warehouse_id)
+        old_quantity = row.quantity
+        new_quantity = old_quantity - quantity
+        row.quantity = new_quantity
+
+        self.repo.add_transaction(
+            InventoryTransaction(
+                product_id=product_id,
+                warehouse_id=warehouse_id,
+                type=TxnType.SHIPMENT_DISPATCH,
+                quantity=-quantity,
+                reference_type="SHIPMENT",
+                reference_id=reference_id,
+                created_by=actor.id,
+            )
+        )
+        if product is not None and warehouse is not None:
+            self.alerts.reconcile_low_stock(
+                product_id=product_id,
+                quantity=new_quantity,
+                threshold=product.reorder_threshold,
+                warehouse_code=warehouse.code,
+            )
+        return old_quantity, new_quantity

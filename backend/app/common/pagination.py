@@ -35,9 +35,15 @@ def apply_pagination(
 
 
 def count_total(db: Session, stmt: Select, count_column: Any) -> int:
-    """Count rows of a select via a COUNT subquery (MySQL-friendly)."""
+    """Count rows of a select via a COUNT subquery (MySQL-friendly).
+
+    ``count_column`` is accepted for backward compatibility but the count is
+    computed over the subquery itself. Counting a bare ORM column against the
+    subquery would reintroduce the original table as a second FROM element and
+    produce a cartesian product (e.g. 9 instead of 3 rows).
+    """
     sub = stmt.subquery()
-    count_stmt = select(func.count(count_column)).select_from(sub)
+    count_stmt = select(func.count()).select_from(sub)
     return int(db.execute(count_stmt).scalar_one())
 
 

@@ -1,9 +1,10 @@
 """FastAPI application factory.
 
-Stage 2 scope: JWT authentication + RBAC and the master-data/inventory resource
-endpoints (users, suppliers, products, warehouses, inventory) layered on the
-Stage 1 foundation (envelope, errors, pagination, repository/service split).
-Orders, shipments, analytics, ML, and scheduled jobs remain later stages.
+Stage 3 scope: order and shipment lifecycle workflows (with state machines,
+append-only shipment history, derived delay calculation, and transactional
+inventory integration on dispatch) layered on the Stage 1 foundation (envelope,
+errors, pagination, repository/service split) and Stage 2 auth/RBAC.
+Analytics, ML, frontend, and scheduled jobs remain later stages.
 """
 
 from __future__ import annotations
@@ -25,7 +26,11 @@ APP_DESCRIPTION = (
     "centralized error handling, and the health endpoint; Stage 2 adds JWT "
     "authentication, role-based access control, users/suppliers/products/"
     "warehouses master data, and warehouse inventory with transactional stock "
-    "mutations. Endpoints are documented in docs/API_CONTRACT.md."
+    "mutations; Stage 3 adds the order lifecycle (PLACED → CONFIRMED → "
+    "FULFILLED/CANCELLED) and the shipment lifecycle (PACKED → IN_TRANSIT → "
+    "DELIVERED) with append-only shipment history, derived delay tracking, and "
+    "inventory integration on dispatch. Endpoints are documented in "
+    "docs/API_CONTRACT.md."
 )
 
 
@@ -33,7 +38,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=APP_TITLE,
         description=APP_DESCRIPTION,
-        version="0.2.0",
+        version="0.3.0",
         openapi_url="/openapi.json",
         docs_url="/docs",
         redoc_url="/redoc",
@@ -74,7 +79,9 @@ def create_app() -> FastAPI:
 
     from app.modules.auth.router import router as auth_router
     from app.modules.inventory.router import router as inventory_router
+    from app.modules.orders.router import router as orders_router
     from app.modules.products.router import router as products_router
+    from app.modules.shipments.router import router as shipments_router
     from app.modules.suppliers.router import router as suppliers_router
     from app.modules.users.router import router as users_router
     from app.modules.warehouses.router import router as warehouses_router
@@ -86,6 +93,8 @@ def create_app() -> FastAPI:
         products_router,
         warehouses_router,
         inventory_router,
+        orders_router,
+        shipments_router,
     ):
         app.include_router(router, prefix=API_PREFIX)
 

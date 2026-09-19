@@ -7,9 +7,10 @@ single edit and roles can never silently drift apart.
 Permission coverage by role:
 
 - ADMIN — everything.
-- WAREHOUSE_MANAGER — reads across the system; warehouse and inventory writes.
+- WAREHOUSE_MANAGER — reads across the system; warehouse, inventory and
+  shipment writes (create/dispatch/deliver).
 - SUPPLY_CHAIN_MANAGER — reads; master data (suppliers/products), warehouses,
-  and inventory writes.
+  inventory and order writes (create/confirm/fulfill/cancel), and shipments.
 - ANALYST — read-only.
 
 Users are the exception: creating/updating users (including assigning roles) is
@@ -36,6 +37,10 @@ class Permission(str, Enum):
     INVENTORY_READ = "inventory:read"
     INVENTORY_WRITE = "inventory:write"
     INVENTORY_TRANSACTIONS_READ = "inventory:transactions:read"
+    ORDERS_READ = "orders:read"
+    ORDERS_WRITE = "orders:write"
+    SHIPMENTS_READ = "shipments:read"
+    SHIPMENTS_WRITE = "shipments:write"
 
 
 _ALL_PERMISSIONS = set(Permission)
@@ -51,6 +56,9 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.INVENTORY_READ,
         Permission.INVENTORY_WRITE,
         Permission.INVENTORY_TRANSACTIONS_READ,
+        Permission.ORDERS_READ,
+        Permission.SHIPMENTS_READ,
+        Permission.SHIPMENTS_WRITE,
     },
     UserRole.SUPPLY_CHAIN_MANAGER: {
         Permission.USERS_READ,
@@ -63,6 +71,10 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.INVENTORY_READ,
         Permission.INVENTORY_WRITE,
         Permission.INVENTORY_TRANSACTIONS_READ,
+        Permission.ORDERS_READ,
+        Permission.ORDERS_WRITE,
+        Permission.SHIPMENTS_READ,
+        Permission.SHIPMENTS_WRITE,
     },
     UserRole.ANALYST: {
         Permission.USERS_READ,
@@ -71,6 +83,8 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.WAREHOUSES_READ,
         Permission.INVENTORY_READ,
         Permission.INVENTORY_TRANSACTIONS_READ,
+        Permission.ORDERS_READ,
+        Permission.SHIPMENTS_READ,
     },
 }
 
