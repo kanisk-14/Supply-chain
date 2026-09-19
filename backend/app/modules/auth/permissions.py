@@ -1,0 +1,98 @@
+"""Centralized role → permission mapping and checks.
+
+Every endpoint authorizes itself by declaring the permissions it needs. The
+allowed permissions per role are defined exactly once here so a role change is a
+single edit and roles can never silently drift apart.
+
+Permission coverage by role:
+
+- ADMIN — everything.
+- WAREHOUSE_MANAGER — reads across the system; warehouse and inventory writes.
+- SUPPLY_CHAIN_MANAGER — reads; master data (suppliers/products), warehouses,
+  and inventory writes.
+- ANALYST — read-only.
+
+Users are the exception: creating/updating users (including assigning roles) is
+ADMIN-only, so no user can grant themselves a higher role.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+
+from app.common.exceptions import ForbiddenError
+from app.modules.users.models import UserRole
+
+
+class Permission(str, Enum):
+    USERS_READ = "users:read"
+    USERS_WRITE = "users:write"
+    SUPPLIERS_READ = "suppliers:read"
+    SUPPLIERS_WRITE = "suppliers:write"
+    PRODUCTS_READ = "products:read"
+    PRODUCTS_WRITE = "products:write"
+    WAREHOUSES_READ = "warehouses:read"
+    WAREHOUSES_WRITE = "warehouses:write"
+    INVENTORY_READ = "inventory:read"
+    INVENTORY_WRITE = "inventory:write"
+    INVENTORY_TRANSACTIONS_READ = "inventory:transactions:read"
+
+
+_ALL_PERMISSIONS = set(Permission)
+
+ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
+    UserRole.ADMIN: _ALL_PERMISSIONS,
+    UserRole.WAREHOUSE_MANAGER: {
+        Permission.USERS_READ,
+        Permission.SUPPLIERS_READ,
+        Permission.PRODUCTS_READ,
+        Permission.WAREHOUSES_READ,
+        Permission.WAREHOUSES_WRITE,
+        Permission.INVENTORY_READ,
+        Permission.INVENTORY_WRITE,
+        Permission.INVENTORY_TRANSACTIONS_READ,
+    },
+    UserRole.SUPPLY_CHAIN_MANAGER: {
+        Permission.USERS_READ,
+        Permission.SUPPLIERS_READ,
+        Permission.SUPPLIERS_WRITE,
+        Permission.PRODUCTS_READ,
+        Permission.PRODUCTS_WRITE,
+        Permission.WAREHOUSES_READ,
+        Permission.WAREHOUSES_WRITE,
+        Permission.INVENTORY_READ,
+        Permission.INVENTORY_WRITE,
+        Permission.INVENTORY_TRANSACTIONS_READ,
+    },
+    UserRole.ANALYST: {
+        Permission.USERS_READ,
+        Permission.SUPPLIERS_READ,
+        Permission.PRODUCTS_READ,
+        Permission.WAREHOUSES_READ,
+        Permission.INVENTORY_READ,
+        Permission.INVENTORY_TRANSACTIONS_READ,
+    },
+}
+
+
+def has_permissions(role: UserRole, *permissions: Permission) -> bool:
+    """True when ``role`` has all of the requested permissions."""
+    granted = ROLE_PERMISSIONS.get(role, set())
+    return all(permission in granted for permission in permissions)
+
+
+def require_permissions(*permissions: Permission):
+    """Build a FastAPI dependency that rejects callers lacking the permissions.
+
+    Deliberately requires *all* listed permissions (no partial granting).
+    """
+
+    def dependency(user) -> None:
+        if not has_permissions(user.role, *permissions):
+            needed = ", ".join(p.value for p in permissions)
+            raise ForbiddenError(
+                f"Role {user.role.value} is not allowed to perform "
+                f"this action (requires {needed})"
+            )
+
+    return dependency
