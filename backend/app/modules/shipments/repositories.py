@@ -7,6 +7,7 @@ the transaction boundary.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -70,20 +71,46 @@ class ShipmentRepository:
             select(Shipment).where(Shipment.id == shipment_id)
         ).scalar_one_or_none()
 
-    def list_potentially_overdue(self, now: datetime) -> list[Shipment]:
-        """Shipments that may now be overdue (``expected < now``, not delivered).
+    def list_potentially_overdue(
+        self, now: datetime
+    ) -> list[tuple[int, ShipmentStatus, datetime | None]]:
+        """``(id, status, expected_delivery_at)`` for possibly-overdue shipments.
 
         This is the targeted candidate set for the scheduled SHIPMENT_OVERDUE
         evaluator — it never scans every shipment, only the ones the time-based
-        rule could have just flipped for.
+        rule could have just flipped for. Only the columns the evaluator needs
+        are selected, avoiding ORM instance-hydration of full shipment graphs.
         """
-        return self.db.execute(
-            select(Shipment).where(
+        rows = self.db.execute(
+            select(
+                Shipment.id,
+                Shipment.status,
+                Shipment.expected_delivery_at,
+            ).where(
                 Shipment.expected_delivery_at.isnot(None),
                 Shipment.expected_delivery_at < now,
                 Shipment.status != ShipmentStatus.DELIVERED,
             )
-        ).scalars().all()
+        ).all()
+        return [(row.id, row.status, row.expected_delivery_at) for row in rows]
+
+    def get_status_rows(
+        self, shipment_ids: Sequence[int]
+    ) -> dict[int, tuple[ShipmentStatus, datetime | None]]:
+        """Batch ``id -> (status, expected_delivery_at)`` for a set of ids.
+
+        Missing ids are simply absent from the result so callers can detect
+        stale references (e.g. alerts pointing at removed shipments) without an
+        N+1 round of ``get_by_id`` lookups.
+        """
+        if not shipment_ids:
+            return {}
+        rows = self.db.execute(
+            select(Shipment.id, Shipment.status, Shipment.expected_delivery_at).where(
+                Shipment.id.in_(shipment_ids)
+            )
+        ).all()
+        return {row.id: (row.status, row.expected_delivery_at) for row in rows}
 
     def add(self, shipment: Shipment) -> None:
         self.db.add(shipment)

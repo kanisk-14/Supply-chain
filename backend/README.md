@@ -6,7 +6,12 @@ migrations, error handling, response envelope, health endpoint, state machines,
 and the testing base. **Stage 2** ships JWT authentication + RBAC, the
 Users/Suppliers/Products/Warehouses resource APIs, transactional inventory
 (adjust/transfer + append-only history), LOW_STOCK alerts, audit logging, a
-development seed script, and full endpoint test coverage.
+development seed script, and full endpoint test coverage. **Stage 3** adds the
+orders → shipments lifecycle with FSM-driven processing and append-only status
+history. **Stage 4** ships the live-computed analytics endpoints (overview,
+inventory, shipments, suppliers, bottlenecks) and the derived-condition alert
+engine — LOW_STOCK, SHIPMENT_OVERDUE — with its alerts API and an optional
+in-process scheduler daemon.
 
 ## Stack
 
@@ -25,7 +30,8 @@ backend/
 │   ├── modules/<domain>/       # users, suppliers, products, warehouses, inventory,
 │   │                           # orders, shipments, alerts, audit_logs, analytics
 │   ├── state_machines/         # base FSM + order + shipment definitions
-│   └── jobs/                   # reserved for scheduled evaluators (later stage)
+│   └── jobs/                   # scheduled evaluators (SHIPMENT_OVERDUE) +
+│                               # in-process/dedicated scheduler daemon
 ├── alembic/                    # migrations (env.py + versions/)
 ├── tests/                      # unit + integration (pytest)
 ├── docs/                       # ERD, DATABASE, ARCHITECTURE, API_CONTRACT
@@ -76,5 +82,6 @@ They use `TEST_DATABASE_URL` and never touch the dev database.
 
 ## Non-goals
 
-No orders/shipments workflows, no alert scheduler, no analytics, no ML, no
-frontend. The layers are designed so those attach without architectural rewrites.
+No external integrations, no ML, and no frontend. The layers are designed so
+those attach without architectural rewrites (orders/shipments workflows, the
+alert scheduler, and analytics are already shipped in Stages 3-4).

@@ -8,12 +8,15 @@ Covers the derived-conditions lifecycle:
 - read-only API with pagination/filtering, plus auth failure behaviour.
 """
 
+import threading
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select
 
 from app.modules.alerts.models import Alert, AlertSeverity, AlertType
+from app.modules.alerts.service import AlertService
 from app.modules.shipments.models import Shipment, ShipmentStatus
 from app.modules.users.models import UserRole
 
@@ -127,7 +130,25 @@ class TestLowStockLifecycle:
 
         data = _list_alerts(api_client, ctx["analyst"])
         assert data["total"] == 1  # same open episode, not duplicated
-        assert data["items"][0]["severity"] == "WARNING"
+        assert data["items"][0]["severity"] == "CRITICAL"
+
+    @pytest.mark.db
+    def test_existing_alert_severity_refreshes_on_each_check(
+        self, api_client, seed, catalog
+    ):
+        """The same open alert row must track the worst state, not keep a stale
+        severity: WARNING at 5 units, CRITICAL at 0, back to WARNING once the
+        product is restocked but still below the threshold."""
+        ctx = _setup(api_client, seed, catalog)
+        _adjust(ctx, api_client, "-95")  # 5 < 10 -> WARNING
+        _adjust(ctx, api_client, "-5")   # 0 -> CRITICAL
+        _adjust(ctx, api_client, "+1")   # 1 -> WARNING (above zero, still low)
+
+        data = _list_alerts(api_client, ctx["analyst"])
+        assert data["total"] == 1  # still one open episode
+        alert = data["items"][0]
+        assert alert["severity"] == "WARNING"
+        assert alert["is_resolved"] is False
 
     @pytest.mark.db
     def test_alert_resolves_when_product_back_above_threshold(
@@ -175,6 +196,145 @@ class TestLowStockLifecycle:
 
         data = _list_alerts(api_client, ctx["analyst"])
         assert data["total"] == 0
+
+    @pytest.mark.db
+    def test_threshold_raise_opens_alert_on_stock_now_below_new_threshold(
+        self, api_client, seed, catalog
+    ):
+        """A reorder_threshold increase can make previously healthy stock low."""
+        ctx = _setup(api_client, seed, catalog, stock=15)  # 15 >= 10: no alert
+
+        patched = api_client.patch(
+            f"/api/v1/products/{ctx['product']['id']}",
+            json={"reorder_threshold": 20},
+            headers=ctx["scm"],
+        )
+        assert patched.status_code == 200, patched.text
+
+        data = _list_alerts(api_client, ctx["analyst"])
+        assert data["total"] == 1
+        assert data["items"][0]["severity"] == "WARNING"
+
+    @pytest.mark.db
+    def test_threshold_drop_resolves_open_alert_when_stock_above_new_threshold(
+        self, api_client, seed, catalog
+    ):
+        ctx = _setup(api_client, seed, catalog)
+        _adjust(ctx, api_client, "-95")  # 5 < 10 -> open WARNING alert
+
+        patched = api_client.patch(
+            f"/api/v1/products/{ctx['product']['id']}",
+            json={"reorder_threshold": 3},
+            headers=ctx["scm"],
+        )
+        assert patched.status_code == 200, patched.text
+
+        data = _list_alerts(api_client, ctx["analyst"], resolved="true")
+        assert data["total"] == 1
+        assert data["items"][0]["is_resolved"] is True
+
+    @pytest.mark.db
+    def test_threshold_change_uses_worst_warehouse_and_reactivates(
+        self, api_client, seed, catalog
+    ):
+        """Threshold updates are reconciled across all warehouses: the lowest row
+        drives the severity/message, and re-raising a threshold re-opens the
+        alert as history (not a fresh duplicate)."""
+        ctx = _setup(api_client, seed, catalog, stock=4)
+        second_wh = catalog.warehouse(code="WH-ALT2", name="Warehouse Two")
+        catalog.inventory(
+            product_id=ctx["product"]["id"],
+            warehouse_id=second_wh["id"],
+            quantity=50,
+        )
+        assert ctx["product"]["reorder_threshold"] == 10  # 4 and 50 both healthy
+
+        def patch_threshold(value):
+            response = api_client.patch(
+                f"/api/v1/products/{ctx['product']['id']}",
+                json={"reorder_threshold": value},
+                headers=ctx["scm"],
+            )
+            assert response.status_code == 200, response.text
+
+        patch_threshold(12)  # 4 < 12 -> WARNING from WH-ALT
+        data = _list_alerts(api_client, ctx["analyst"])
+        assert data["total"] == 1
+        assert data["items"][0]["severity"] == "WARNING"
+        assert "WH-ALT" in data["items"][0]["message"]
+
+        patch_threshold(3)  # 4 >= 3 and 50 >= 3 -> resolve
+        data = _list_alerts(api_client, ctx["analyst"], resolved="true")
+        assert data["total"] == 1
+        assert data["items"][0]["is_resolved"] is True
+
+        patch_threshold(100)  # 4 < 100 -> new open episode as a fresh row
+        data = _list_alerts(api_client, ctx["analyst"])
+        assert data["total"] == 2  # one resolved history + one open
+        open_rows = [a for a in data["items"] if a["is_resolved"] is False]
+        assert len(open_rows) == 1
+        assert open_rows[0]["severity"] == "WARNING"
+
+
+class TestAlertConcurrency:
+    @pytest.mark.db
+    def test_concurrent_reconcile_dedupes_to_one_open_alert(
+        self, session_factory
+    ):
+        """Racing reconciles for the same product must never open two alerts:
+        the UNIQUE ``active_key`` collapses them into one at the DB level."""
+
+        def do_reconcile():
+            with session_factory() as db:
+                AlertService(db).reconcile_low_stock(
+                    product_id=7,
+                    quantity=Decimal("2"),
+                    threshold=Decimal("10"),
+                    warehouse_code="WH-RACE",
+                )
+                db.commit()
+
+        threads = [threading.Thread(target=do_reconcile) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        with session_factory() as db:
+            rows = db.execute(select(Alert)).scalars().all()
+            assert len(rows) == 1
+            assert rows[0].is_resolved is False
+            assert rows[0].active_key == "LOW_STOCK:product:7"
+
+    @pytest.mark.db
+    def test_ensure_alert_upsert_refreshes_severity_on_existing_open(
+        self, session_factory
+    ):
+        with session_factory() as db:
+            AlertService(db)._ensure_alert(
+                alert_type=AlertType.LOW_STOCK,
+                severity=AlertSeverity.WARNING,
+                entity_type="product",
+                entity_id=1,
+                message="low",
+            )
+            db.commit()
+        with session_factory() as db:
+            AlertService(db)._ensure_alert(
+                alert_type=AlertType.LOW_STOCK,
+                severity=AlertSeverity.CRITICAL,
+                entity_type="product",
+                entity_id=1,
+                message="zero",
+            )
+            db.commit()
+
+        with session_factory() as db:
+            rows = db.execute(select(Alert)).scalars().all()
+            assert len(rows) == 1
+            assert rows[0].severity == AlertSeverity.CRITICAL
+            assert rows[0].message == "zero"
+            assert rows[0].is_resolved is False
 
 
 class TestShipmentOverdueLifecycle:

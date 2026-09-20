@@ -12,13 +12,18 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from fastapi.testclient import TestClient
+from sqlalchemy import delete, func, select
 
 from app.jobs.scheduler import run_loop, run_once
 from app.jobs.service import run_overdue_check
 from app.modules.alerts.models import Alert, AlertType
 from app.modules.orders.models import Order, OrderItem
-from app.modules.shipments.models import Shipment, ShipmentStatus
+from app.modules.shipments.models import (
+    Shipment,
+    ShipmentStatus,
+    ShipmentStatusHistory,
+)
 from app.modules.users.models import UserRole
 from app.state_machines.order import OrderStatus
 
@@ -28,6 +33,13 @@ from tests.conftest import login
 def _seed_overdue(session_factory, user_id, *, delivered=False):
     """One order + one PACKED shipment whose expected date is in the past."""
     now = datetime.utcnow()
+    return _seed_with_expected(
+        session_factory, user_id, now - dt.timedelta(days=1), delivered=delivered
+    )
+
+
+def _seed_with_expected(session_factory, user_id, expected_at, *, delivered=False):
+    """One order + one shipment with an explicit ``expected_delivery_at``."""
     with session_factory() as db:
         from app.modules.products.models import Product
         from app.modules.suppliers.models import Supplier
@@ -52,8 +64,8 @@ def _seed_overdue(session_factory, user_id, *, delivered=False):
             order_id=order.id,
             status=ShipmentStatus.DELIVERED if delivered else ShipmentStatus.PACKED,
             created_by=user_id,
-            expected_delivery_at=now - dt.timedelta(days=1),
-            actual_delivery_at=now if delivered else None,
+            expected_delivery_at=expected_at,
+            actual_delivery_at=datetime.utcnow() if delivered else None,
         )
         db.add(shipment)
         db.commit()
@@ -155,6 +167,66 @@ class TestRunOverdueCheck:
         assert report["created"] == 0
         assert _alert_count(session_factory) == 0
 
+    @pytest.mark.db
+    def test_strict_boundary_expected_equals_now_is_not_overdue(
+        self, session_factory, seed, monkeypatch
+    ):
+        """Overdue is ``expected_delivery_at < now`` (strict): at the exact
+        instant the shipment is not yet late."""
+        actor = seed.user("jobs@boundary.com", role=UserRole.ANALYST)
+        reference = datetime(2026, 3, 1, 9, 0, 0, 0)
+        _seed_with_expected(
+            session_factory, actor["id"], reference
+        )
+
+        monkeypatch.setattr("app.jobs.service.utcnow", lambda: reference)
+        with session_factory() as db:
+            report = run_overdue_check(db)
+        assert report["created"] == 0
+        assert _open_alert_count(session_factory) == 0
+
+        # One microsecond later the same shipment is overdue.
+        monkeypatch.setattr(
+            "app.jobs.service.utcnow",
+            lambda: reference + dt.timedelta(microseconds=1),
+        )
+        with session_factory() as db:
+            report = run_overdue_check(db)
+        assert report["created"] == 1
+        assert _open_alert_count(session_factory) == 1
+
+    @pytest.mark.db
+    def test_stale_alert_resolves_when_shipment_row_is_deleted(
+        self, session_factory, seed
+    ):
+        """An open alert pointing at a removed shipment must not linger: the
+        sweep resolves it instead of crashing on a missing reference."""
+        actor = seed.user("jobs@missing.com", role=UserRole.ANALYST)
+        ids = _seed_overdue(session_factory, actor["id"])
+
+        with session_factory() as db:
+            run_overdue_check(db)
+        assert _open_alert_count(session_factory) == 1
+
+        with session_factory() as db:
+            db.execute(
+                delete(ShipmentStatusHistory).where(
+                    ShipmentStatusHistory.shipment_id == ids["shipment_id"]
+                )
+            )
+            db.execute(
+                delete(Shipment).where(Shipment.id == ids["shipment_id"])
+            )
+            db.commit()
+
+        with session_factory() as db:
+            report = run_overdue_check(db)
+
+        assert report["resolved"] == 1
+        assert report["created"] == 0
+        assert _alert_count(session_factory) == 1  # resolved history row kept
+        assert _open_alert_count(session_factory) == 0
+
 
 class TestRunOnceAndLoop:
     @pytest.mark.db
@@ -199,3 +271,57 @@ class TestRunOnceAndLoop:
         assert reports[0]["created"] == 1
         assert reports[-1]["created"] == 0  # subsequent cycles stay idempotent
         assert _open_alert_count(session_factory) == 1
+
+
+class TestSchedulerLifecycle:
+    def test_lifespan_starts_and_stops_scheduler_when_enabled(self, monkeypatch):
+        import app.main as main_module
+
+        started = []
+        joined = []
+
+        class FakeThread:
+            def __init__(self, stop_event):
+                self.stop_event = stop_event
+
+            def join(self, timeout=None):
+                joined.append((self, timeout, self.stop_event.is_set()))
+
+            def is_alive(self):
+                return False
+
+        def fake_thread(stop_event):
+            started.append(stop_event)
+            return FakeThread(stop_event)
+
+        monkeypatch.setattr(main_module.settings, "SCHEDULER_ENABLED", True)
+        monkeypatch.setattr(main_module, "_scheduler_thread", fake_thread)
+
+        app = main_module.create_app()
+        with TestClient(app) as client:
+            assert client.get("/health").status_code == 200
+            assert len(started) == 1
+
+        # Lifespan teardown sets the stop event and joins the thread.
+        assert len(started) == 1
+        assert len(joined) == 1
+        fake, timeout, stop_set_before_join = joined[0]
+        assert fake.stop_event is started[0]
+        assert timeout == 10
+        assert stop_set_before_join is True
+
+    def test_lifespan_does_not_start_scheduler_when_disabled(self, monkeypatch):
+        import app.main as main_module
+
+        started = []
+
+        monkeypatch.setattr(main_module.settings, "SCHEDULER_ENABLED", False)
+        monkeypatch.setattr(
+            main_module, "_scheduler_thread", lambda stop_event: started.append(stop_event)
+        )
+
+        app = main_module.create_app()
+        with TestClient(app) as client:
+            assert client.get("/health").status_code == 200
+
+        assert started == []

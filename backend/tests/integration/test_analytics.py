@@ -268,6 +268,122 @@ class TestSupplierAnalytics:
         assert supplier["on_time_delivery_rate"] == pytest.approx(0.5, abs=0.001)
         assert supplier["average_delivery_hours"] == pytest.approx(33.0, abs=0.001)
 
+    @pytest.mark.db
+    def test_multi_line_order_counts_each_shipment_once(
+        self, api_client, seed, session_factory
+    ):
+        """One order with two lines from the same supplier is still ONE order
+        with ONE shipment: line-item multiplicity must not inflate
+        order_count/delivery_count or skew the average delivery time."""
+        headers, actor_id = _analyst_headers(api_client, seed)
+        now = datetime.utcnow()
+
+        from app.modules.suppliers.models import Supplier
+        from app.modules.products.models import Product
+
+        with session_factory() as db:
+            supplier = Supplier(name="Line Supplier", code="SUP-LINE")
+            p1 = Product(
+                supplier=supplier, sku="SKU-L1", name="Part One", unit="unit",
+                reorder_threshold=Decimal("2"),
+            )
+            p2 = Product(
+                supplier=supplier, sku="SKU-L2", name="Part Two", unit="unit",
+                reorder_threshold=Decimal("2"),
+            )
+            db.add_all([supplier, p1, p2])
+            db.flush()
+            order = Order(
+                order_number="ORD-LINE",
+                status=OrderStatus.FULFILLED,
+                created_by=actor_id,
+                created_at=now - dt.timedelta(hours=40),
+            )
+            db.add(order)
+            db.flush()
+            db.add_all([
+                OrderItem(order_id=order.id, product_id=p1.id, quantity=Decimal("5")),
+                OrderItem(order_id=order.id, product_id=p2.id, quantity=Decimal("5")),
+            ])
+            shipment = Shipment(
+                shipment_number="SHP-LINE",
+                order_id=order.id,
+                status=ShipmentStatus.DELIVERED,
+                created_by=actor_id,
+                created_at=now - dt.timedelta(hours=40),
+                expected_delivery_at=None,
+                actual_delivery_at=now - dt.timedelta(hours=10),
+            )
+            db.add(shipment)
+            db.commit()
+
+        data = _get(client=api_client, headers=headers, path="/api/v1/analytics/suppliers")
+        supplier = next(s for s in data["suppliers"] if s["code"] == "SUP-LINE")
+        assert supplier["order_count"] == 1
+        assert supplier["delivery_count"] == 1
+        assert supplier["on_time_delivery_rate"] == pytest.approx(1.0, abs=0.001)
+        assert supplier["average_delivery_hours"] == pytest.approx(30.0, abs=0.001)
+
+    @pytest.mark.db
+    def test_multi_supplier_order_attributes_shipment_to_each_supplier_once(
+        self, api_client, seed, session_factory
+    ):
+        """A shipment belongs to an order covering several suppliers; each
+        supplier with a line on that order gets the order and its shipment
+        counted exactly once."""
+        headers, actor_id = _analyst_headers(api_client, seed)
+        now = datetime.utcnow()
+
+        from app.modules.suppliers.models import Supplier
+        from app.modules.products.models import Product
+
+        with session_factory() as db:
+            s1 = Supplier(name="Supplier Alpha", code="SUP-ALPHA")
+            s2 = Supplier(name="Supplier Beta", code="SUP-BETA")
+            p1 = Product(
+                supplier=s1, sku="SKU-M1", name="Alpha Part", unit="unit",
+                reorder_threshold=Decimal("2"),
+            )
+            p2 = Product(
+                supplier=s2, sku="SKU-M2", name="Beta Part", unit="unit",
+                reorder_threshold=Decimal("2"),
+            )
+            db.add_all([s1, s2, p1, p2])
+            db.flush()
+            order = Order(
+                order_number="ORD-MULTI",
+                status=OrderStatus.FULFILLED,
+                created_by=actor_id,
+                created_at=now - dt.timedelta(hours=40),
+            )
+            db.add(order)
+            db.flush()
+            db.add_all([
+                OrderItem(order_id=order.id, product_id=p1.id, quantity=Decimal("3")),
+                OrderItem(order_id=order.id, product_id=p2.id, quantity=Decimal("3")),
+            ])
+            shipment = Shipment(
+                shipment_number="SHP-MULTI",
+                order_id=order.id,
+                status=ShipmentStatus.DELIVERED,
+                created_by=actor_id,
+                created_at=now - dt.timedelta(hours=40),
+                expected_delivery_at=now - dt.timedelta(hours=20),
+                actual_delivery_at=now - dt.timedelta(hours=10),
+            )
+            db.add(shipment)
+            db.commit()
+
+        data = _get(client=api_client, headers=headers, path="/api/v1/analytics/suppliers")
+        alpha = next(s for s in data["suppliers"] if s["code"] == "SUP-ALPHA")
+        beta = next(s for s in data["suppliers"] if s["code"] == "SUP-BETA")
+        for supplier in (alpha, beta):
+            assert supplier["order_count"] == 1
+            assert supplier["delivery_count"] == 1
+            # Shipment 40h -> 10h, delivered 10h after its 20h deadline.
+            assert supplier["average_delivery_hours"] == pytest.approx(30.0, abs=0.001)
+            assert supplier["on_time_delivery_rate"] == pytest.approx(0.0, abs=0.001)
+
 
 class TestBottlenecks:
     @pytest.mark.db
@@ -301,3 +417,76 @@ class TestBottlenecks:
         assert transit_to_delivered["max_hours"] == pytest.approx(46.0, abs=0.001)
         assert transit_to_delivered["p50_hours"] == pytest.approx(16.0, abs=0.001)
         assert transit_to_delivered["p90_hours"] == pytest.approx(16.0, abs=0.001)
+
+    @pytest.mark.db
+    def test_bottlenecks_use_changed_at_not_history_insertion_order(
+        self, api_client, seed, session_factory
+    ):
+        """Stage durations follow the *event* time (``changed_at``), never the
+        history row insertion ``id``: a backfill that inserts the DELIVERED row
+        before the IN_TRANSIT row must still produce 10h PACKED->IN_TRANSIT and
+        40h IN_TRANSIT->DELIVERED (an id-ordered window would see no valid
+        transitions at all)."""
+        headers, actor_id = _analyst_headers(api_client, seed)
+        now = datetime.utcnow()
+
+        from app.modules.suppliers.models import Supplier
+        from app.modules.products.models import Product
+
+        with session_factory() as db:
+            supplier = Supplier(name="Backfill Supplier", code="SUP-BF")
+            product = Product(
+                supplier=supplier, sku="SKU-BF", name="Backfilled", unit="unit",
+                reorder_threshold=Decimal("2"),
+            )
+            db.add_all([supplier, product])
+            db.flush()
+            order = Order(
+                order_number="ORD-BF",
+                status=OrderStatus.FULFILLED,
+                created_by=actor_id,
+                created_at=now - dt.timedelta(hours=50),
+            )
+            db.add(order)
+            db.flush()
+            db.add(OrderItem(order_id=order.id, product_id=product.id, quantity=Decimal("1")))
+            shipment = Shipment(
+                shipment_number="SHP-BF",
+                order_id=order.id,
+                status=ShipmentStatus.DELIVERED,
+                created_by=actor_id,
+                created_at=now - dt.timedelta(hours=50),
+                expected_delivery_at=None,
+                actual_delivery_at=now - dt.timedelta(hours=10),
+            )
+            db.add(shipment)
+            db.flush()
+            # Insert OUT of chronological order on purpose: DELIVERED comes
+            # before IN_TRANSIT, so an id-based window is nonsensical.
+            def history(status, hours):
+                db.add(
+                    ShipmentStatusHistory(
+                        shipment_id=shipment.id,
+                        status=status,
+                        changed_by=actor_id,
+                        changed_at=now - dt.timedelta(hours=hours),
+                    )
+                )
+
+            history(ShipmentStatus.PACKED, 50)
+            history(ShipmentStatus.DELIVERED, 0)    # id-inserted before transit
+            history(ShipmentStatus.IN_TRANSIT, 40)
+            db.commit()
+
+        data = _get(client=api_client, headers=headers, path="/api/v1/analytics/bottlenecks")
+        segments = {s["name"]: s for s in data["segments"]}
+
+        packed_to_transit = segments["packed_to_in_transit"]
+        assert packed_to_transit["count"] == 1
+        assert packed_to_transit["avg_hours"] == pytest.approx(10.0, abs=0.001)
+        assert packed_to_transit["max_hours"] == pytest.approx(10.0, abs=0.001)
+
+        transit_to_delivered = segments["in_transit_to_delivered"]
+        assert transit_to_delivered["count"] == 1
+        assert transit_to_delivered["avg_hours"] == pytest.approx(40.0, abs=0.001)
+        assert transit_to_delivered["max_hours"] == pytest.approx(40.0, abs=0.001)

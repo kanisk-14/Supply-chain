@@ -22,16 +22,16 @@ is read-only (``app/modules/alerts/router.py``).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from app.common.exceptions import NotFoundError
 from app.core.database import utcnow
-from app.modules.alerts.models import AlertSeverity, AlertType
+from app.modules.alerts.models import Alert, AlertSeverity, AlertType
 from app.modules.alerts.repositories import AlertRepository
 from app.modules.alerts.schemas import alert_payload
 from app.state_machines.shipment import ShipmentStatus
@@ -74,8 +74,14 @@ class AlertService:
         quantity: Decimal,
         threshold: Decimal,
         warehouse_code: str,
+        product_above_threshold: bool | None = None,
     ) -> None:
-        """Create or resolve the LOW_STOCK alert for a product after a change."""
+        """Create or resolve the LOW_STOCK alert for a product after a change.
+
+        ``product_above_threshold`` lets callers that already know the whole
+        product is at/above the threshold skip the extra scan; when omitted it
+        is derived from the inventory rows.
+        """
         below = quantity < threshold
         if below:
             self._ensure_alert(
@@ -93,10 +99,44 @@ class AlertService:
                 ),
             )
         else:
-            if _product_back_above_threshold(self.db, product_id, threshold):
+            if product_above_threshold is None:
+                min_quantity = self.repo.product_min_quantity(product_id)
+                product_above_threshold = (
+                    min_quantity is None or min_quantity >= threshold
+                )
+            if product_above_threshold:
                 self._resolve_open(
                     AlertType.LOW_STOCK, "product", product_id
                 )
+
+    def reconcile_low_stock_threshold_change(
+        self,
+        *,
+        product_id: int,
+        threshold: Decimal,
+        stocks: Sequence[tuple[Decimal, str]],
+    ) -> None:
+        """Reconcile LOW_STOCK after a ``reorder_threshold`` update.
+
+        ``stocks`` is ``(quantity, warehouse_code)`` for every inventory row of
+        the product. A row now below the new threshold re-opens (or refreshes)
+        the product's alert — using the most severe (lowest) row for the
+        severity/message; when every row is at/above the threshold open alerts
+        resolve.
+        """
+        if not stocks:
+            self._resolve_open(AlertType.LOW_STOCK, "product", product_id)
+            return
+        lowest = min(stocks, key=lambda stock: stock[0])
+        if lowest[0] < threshold:
+            self.reconcile_low_stock(
+                product_id=product_id,
+                quantity=lowest[0],
+                threshold=threshold,
+                warehouse_code=lowest[1],
+            )
+        else:
+            self._resolve_open(AlertType.LOW_STOCK, "product", product_id)
 
     def reconcile_shipment_overdue(
         self,
@@ -147,19 +187,33 @@ class AlertService:
     ) -> None:
         """Create an alert unless an equivalent unresolved one already exists.
 
-        ``equivalent`` = same type + same entity; an identically-scoped open
-        alert is never duplicated. When all existing alerts for the condition
-        are resolved (previous episode over), this creates a fresh row, which
-        is the documented reactivation behaviour.
+        Implemented as ``INSERT ... ON DUPLICATE KEY UPDATE`` against the UNIQUE
+        ``active_key`` column, so the check-and-insert is one atomic statement:
+        concurrent requests racing to open the same alert cannot both insert, and
+        an existing open alert is refreshed to the latest severity/message so a
+        stale severity never survives (e.g. WARNING → CRITICAL → WARNING).
         """
-        if not self.repo.has_unresolved(alert_type, entity_type, entity_id):
-            self.repo.add(
-                alert_type=alert_type,
-                severity=severity,
-                entity_type=entity_type,
-                entity_id=entity_id,
-                message=message,
-            )
+        stmt = mysql_insert(Alert).values(
+            type=alert_type,
+            severity=severity,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            message=message,
+            is_resolved=False,
+            active_key=self.repo.unresolve_key(alert_type, entity_type, entity_id),
+            created_at=utcnow(),
+        )
+        stmt = stmt.on_duplicate_key_update(
+            severity=stmt.inserted.severity,
+            message=stmt.inserted.message,
+        )
+        self.db.execute(stmt)
+
+    def resolve(
+        self, *, alert_type: AlertType, entity_type: str, entity_id: int
+    ) -> None:
+        """Resolve every open alert for an entity (e.g. the overdue sweep)."""
+        self._resolve_open(alert_type, entity_type, entity_id)
 
     def _resolve_open(
         self,
@@ -176,16 +230,3 @@ class AlertService:
         for alert in self.repo.unresolved_for(alert_type, entity_type, entity_id):
             if predicate is None or predicate(alert):
                 self.repo.mark_resolved(alert)
-
-
-def _product_back_above_threshold(
-    db: Session, product_id: int, threshold: Decimal
-) -> bool:
-    from app.modules.inventory.models import Inventory
-
-    rows = db.execute(
-        select(Inventory.quantity).where(Inventory.product_id == product_id)
-    ).scalars().all()
-    if not rows:
-        return True
-    return min(rows) >= threshold

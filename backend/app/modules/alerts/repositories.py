@@ -82,6 +82,14 @@ class AlertRepository:
         )
         return int(self.db.execute(stmt).scalar_one()) > 0
 
+    def unresolve_key(self, alert_type: AlertType, entity_type: str, entity_id: int) -> str:
+        """Deterministic storage key for one open (type, entity) episode.
+
+        Non-NULL only while the alert is unresolved; it backs the UNIQUE index
+        that guarantees at most one open alert per episode at the InnoDB level.
+        """
+        return f"{alert_type.value}:{entity_type}:{entity_id}"
+
     def unresolved_of_type(self, alert_type: AlertType) -> list[Alert]:
         """Open alerts for one rule — the scheduled evaluator's sweep target."""
         return self.db.execute(
@@ -105,6 +113,7 @@ class AlertRepository:
             entity_type=entity_type,
             entity_id=entity_id,
             message=message,
+            active_key=self.unresolve_key(alert_type, entity_type, entity_id),
         )
         self.db.add(alert)
         self.db.flush()
@@ -113,4 +122,20 @@ class AlertRepository:
     def mark_resolved(self, alert: Alert) -> None:
         alert.is_resolved = True
         alert.resolved_at = utcnow()
+        alert.active_key = None
         self.db.flush()
+
+    def product_min_quantity(self, product_id: int) -> Decimal | None:
+        """Lowest current inventory quantity for a product (None when no rows).
+
+        Callers (e.g. LOW_STOCK reconciliation) combine this with the threshold
+        to decide whether a product has moved back above it. Aggregated in SQL
+        so the per-row fetch-and-min in Python is avoided.
+        """
+        from app.modules.inventory.models import Inventory
+
+        return self.db.execute(
+            select(func.min(Inventory.quantity)).where(
+                Inventory.product_id == product_id
+            )
+        ).scalar_one()

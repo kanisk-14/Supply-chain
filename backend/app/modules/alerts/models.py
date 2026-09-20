@@ -47,6 +47,15 @@ class Alert(Base):
     is_resolved: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )
+    # Non-null only while the alert is unresolved: the value is
+    # "<type>:<entity_type>:<entity_id>" for an open episode and NULL once
+    # resolved. The UNIQUE index on this column is the InnoDB-level guard that
+    # makes concurrent alert creation atomic — two requests racing to open the
+    # same alert cannot both insert because the key collides. MySQL treats NULLs
+    # as distinct, so any number of resolved history rows is allowed.
+    active_key: Mapped[str | None] = mapped_column(
+        String(130), nullable=True, unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DATETIME(fsp=6),
         nullable=False,

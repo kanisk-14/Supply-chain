@@ -10,6 +10,7 @@ later stages.
 
 from __future__ import annotations
 
+import logging
 import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -21,6 +22,8 @@ from app.common.handlers import register_exception_handlers
 from app.common.responses import build_success_response
 from app.core.config import settings
 from app.core.database import check_database_connectivity
+
+logger = logging.getLogger(__name__)
 
 API_PREFIX = "/api/v1"
 
@@ -74,20 +77,28 @@ def create_app() -> FastAPI:
             if lifespan_thread is not None and lifespan_stop_event is not None:
                 lifespan_stop_event.set()
                 lifespan_thread.join(timeout=10)
+                if lifespan_thread.is_alive():
+                    # The scheduler ignored 10s of stop-signal + join time, so
+                    # a clean synchronous shutdown did not happen. Report it
+                    # instead of silently assuming termination: the daemon
+                    # thread is eventually reaped with the interpreter, but a
+                    # caller that watches logs should see this — it is the only
+                    # signal that an evaluation may have been interrupted mid
+                    # unit-of-work after the stop event fired.
+                    lifespan_conf = settings.SCHEDULER_ENABLED
+                    logger.warning(
+                        "Scheduler thread marked alive after 10s stop+join "
+                        "shutdown (SCHEDULER_ENABLED=%s); the final tick may "
+                        "have been cut off — check unresolved SHIPMENT_OVERDUE "
+                        "alerts on next start.",
+                        lifespan_conf,
+                    )
 
     app = FastAPI(
         title=APP_TITLE,
         description=APP_DESCRIPTION,
         version="0.4.0",
         lifespan=lifespan,
-        openapi_url="/openapi.json",
-        docs_url="/docs",
-        redoc_url="/redoc",
-    )
-    app = FastAPI(
-        title=APP_TITLE,
-        description=APP_DESCRIPTION,
-        version="0.3.0",
         openapi_url="/openapi.json",
         docs_url="/docs",
         redoc_url="/redoc",

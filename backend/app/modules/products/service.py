@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.common.exceptions import (
@@ -18,7 +19,9 @@ from app.common.exceptions import (
     ValidationError,
 )
 from app.common.transactions import transaction
+from app.modules.alerts.service import AlertService
 from app.modules.audit_logs.service import AuditLogService
+from app.modules.inventory.models import Inventory
 from app.modules.products.models import Product
 from app.modules.products.repositories import ProductRepository
 from app.modules.products.schemas import (
@@ -28,6 +31,7 @@ from app.modules.products.schemas import (
 )
 from app.modules.suppliers.repositories import SupplierRepository
 from app.modules.users.models import User
+from app.modules.warehouses.models import Warehouse
 
 
 class ProductService:
@@ -99,7 +103,8 @@ class ProductService:
             product = self._get_or_raise(product_id)
             changes = payload.model_dump(exclude_unset=True)
 
-            if "reorder_threshold" in changes:
+            threshold_changed = "reorder_threshold" in changes
+            if threshold_changed:
                 self._validate_threshold(changes["reorder_threshold"])
                 product.reorder_threshold = changes["reorder_threshold"]
 
@@ -120,6 +125,8 @@ class ProductService:
                 product.is_active = changes["is_active"]
 
             self.db.flush()
+            if threshold_changed:
+                self._reconcile_low_stock(product.id, product.reorder_threshold)
             self.audit.record(
                 user_id=actor.id,
                 action="PRODUCT.UPDATE",
@@ -140,6 +147,24 @@ class ProductService:
     def _require_supplier(self, supplier_id: int) -> None:
         if self.suppliers.get_by_id(supplier_id) is None:
             raise NotFoundError(f"Supplier {supplier_id} not found")
+
+    def _reconcile_low_stock(self, product_id: int, threshold: Decimal) -> None:
+        """Reconcile LOW_STOCK after ``reorder_threshold`` changed.
+
+        Every inventory row of the product is re-evaluated against the new
+        threshold: rows now below it re-open/refresh the product's alert, and
+        the alert resolves once every row is at/above it.
+        """
+        rows = self.db.execute(
+            select(Inventory.quantity, Warehouse.code)
+            .join(Warehouse, Warehouse.id == Inventory.warehouse_id)
+            .where(Inventory.product_id == product_id)
+        ).all()
+        AlertService(self.db).reconcile_low_stock_threshold_change(
+            product_id=product_id,
+            threshold=threshold,
+            stocks=[(row.quantity, row.code) for row in rows],
+        )
 
     @staticmethod
     def _validate_threshold(threshold: Decimal) -> None:

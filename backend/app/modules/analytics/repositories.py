@@ -298,35 +298,93 @@ class AnalyticsRepository:
     def supplier_performance(self) -> list[tuple]:
         """Per-supplier aggregates computed solely from orders/shipments.
 
-        ``order_count`` counts an order once per supplier contributing a line to
-        it; ``delivery_count``/``on_time_count`` count delivered shipments of
-        those orders (an order may have many shipments). No performance value is
-        stored on the supplier row itself.
+        A shipment belongs to an *order*, not to a line item, so shipment
+        metrics are attributed to every supplier that contributes a product line
+        to that order — but each distinct order/shipment is counted exactly
+        once per supplier. Building ``(supplier, order)`` and ``(supplier,
+        shipment)`` sets with ``DISTINCT`` before aggregating prevents a
+        multi-line order (possibly covering several suppliers) from inflating
+        counts or skewing the average delivery time. ``order_count`` counts an
+        order once per supplier contributing a line to it;
+        ``delivery_count``/``on_time_count`` count delivered shipments of those
+        orders. No performance value is stored on the supplier row itself.
         """
         sh = Shipment
-        delivered_cond = sh.status == ShipmentStatus.DELIVERED
-        on_time_cond = or_(
-            sh.expected_delivery_at.is_(None),
-            and_(
-                sh.actual_delivery_at.isnot(None),
-                sh.actual_delivery_at <= sh.expected_delivery_at,
-            ),
-        )
-        stmt = (
+        # Distinct (supplier, order) pairs: order_count attributes an order to
+        # every supplier with a line on it, once.
+        supplier_orders = (
             select(
-                Supplier.id,
-                Supplier.code,
-                Supplier.name,
-                func.count(func.distinct(Order.id)).label("order_count"),
+                Product.supplier_id.label("supplier_id"),
+                OrderItem.order_id.label("order_id"),
+            )
+            .select_from(Product)
+            .join(OrderItem, OrderItem.product_id == Product.id)
+            .distinct()
+            .subquery()
+        )
+        order_agg = (
+            select(
+                supplier_orders.c.supplier_id.label("supplier_id"),
+                func.count(supplier_orders.c.order_id).label("order_count"),
+            )
+            .group_by(supplier_orders.c.supplier_id)
+            .subquery()
+        )
+        # Distinct (supplier, shipment) rows: strip line-item multiplicity so a
+        # single shipment is never replicated through two order lines.
+        supplier_shipments = (
+            select(
+                Product.supplier_id.label("supplier_id"),
+                sh.id.label("shipment_id"),
+                sh.status.label("status"),
+                sh.created_at.label("created_at"),
+                sh.actual_delivery_at.label("actual_delivery_at"),
+                sh.expected_delivery_at.label("expected_delivery_at"),
+            )
+            .select_from(Product)
+            .join(OrderItem, OrderItem.product_id == Product.id)
+            .join(Order, Order.id == OrderItem.order_id)
+            .join(sh, sh.order_id == Order.id)
+            .distinct()
+            .subquery()
+        )
+        shipment_agg = (
+            select(
+                supplier_shipments.c.supplier_id.label("supplier_id"),
                 func.count(
                     func.distinct(
-                        case((delivered_cond, sh.id), else_=literal_column("NULL"))
+                        case(
+                            (
+                                supplier_shipments.c.status
+                                == ShipmentStatus.DELIVERED,
+                                supplier_shipments.c.shipment_id,
+                            ),
+                            else_=literal_column("NULL"),
+                        )
                     )
                 ).label("delivery_count"),
                 func.count(
                     func.distinct(
                         case(
-                            (and_(delivered_cond, on_time_cond), sh.id),
+                            (
+                                and_(
+                                    supplier_shipments.c.status
+                                    == ShipmentStatus.DELIVERED,
+                                    or_(
+                                        supplier_shipments.c.expected_delivery_at.is_(
+                                            None
+                                        ),
+                                        and_(
+                                            supplier_shipments.c.actual_delivery_at.isnot(
+                                                None
+                                            ),
+                                            supplier_shipments.c.actual_delivery_at
+                                            <= supplier_shipments.c.expected_delivery_at,
+                                        ),
+                                    ),
+                                ),
+                                supplier_shipments.c.shipment_id,
+                            ),
                             else_=literal_column("NULL"),
                         )
                     )
@@ -334,19 +392,47 @@ class AnalyticsRepository:
                 func.avg(
                     case(
                         (
-                            delivered_cond,
-                            _seconds_timediff(sh.created_at, sh.actual_delivery_at),
+                            supplier_shipments.c.status
+                            == ShipmentStatus.DELIVERED,
+                            _seconds_timediff(
+                                supplier_shipments.c.created_at,
+                                supplier_shipments.c.actual_delivery_at,
+                            ),
                         ),
                         else_=literal_column("NULL"),
                     )
                 ).label("avg_delivery_seconds"),
             )
+            .group_by(supplier_shipments.c.supplier_id)
+            .subquery()
+        )
+        stmt = (
+            select(
+                Supplier.id,
+                Supplier.code,
+                Supplier.name,
+                func.coalesce(order_agg.c.order_count, 0).label("order_count"),
+                func.coalesce(
+                    shipment_agg.c.delivery_count, 0
+                ).label("delivery_count"),
+                func.coalesce(
+                    shipment_agg.c.on_time_count, 0
+                ).label("on_time_count"),
+                shipment_agg.c.avg_delivery_seconds.label("avg_delivery_seconds"),
+            )
             .select_from(Supplier)
             .join(Product, Product.supplier_id == Supplier.id)
-            .join(OrderItem, OrderItem.product_id == Product.id)
-            .join(Order, Order.id == OrderItem.order_id)
-            .outerjoin(sh, sh.order_id == Order.id)
-            .group_by(Supplier.id, Supplier.code, Supplier.name)
+            .outerjoin(order_agg, order_agg.c.supplier_id == Supplier.id)
+            .outerjoin(shipment_agg, shipment_agg.c.supplier_id == Supplier.id)
+            .group_by(
+                Supplier.id,
+                Supplier.code,
+                Supplier.name,
+                order_agg.c.order_count,
+                shipment_agg.c.delivery_count,
+                shipment_agg.c.on_time_count,
+                shipment_agg.c.avg_delivery_seconds,
+            )
             .order_by(Supplier.id)
         )
         return [tuple(r) for r in self.db.execute(stmt)]
@@ -354,17 +440,36 @@ class AnalyticsRepository:
     # ---- bottlenecks ----
 
     def _stage_duration_stmt(self, from_status, to_status) -> Select:
-        """One row per consecutive ``from → to`` transition: elapsed seconds."""
-        order_cols = (ShipmentStatusHistory.changed_at, ShipmentStatusHistory.id)
+        """One row per consecutive ``from → to`` transition: elapsed seconds.
+
+        Chronology is determined by ``changed_at`` first — history insertion
+        order is used only as a deterministic tiebreaker for equal timestamps
+        (the UNIQUE-per-shipment window would be ambiguous otherwise). The
+        history row's ``id`` is never used to re-order across *different*
+        timestamps: an out-of-order backfill may carry ids that do not match
+        the real sequence of events.
+        """
         hist = select(
             ShipmentStatusHistory.shipment_id.label("shipment_id"),
             ShipmentStatusHistory.status.label("status"),
             ShipmentStatusHistory.changed_at.label("changed_at"),
             func.lag(ShipmentStatusHistory.status)
-            .over(partition_by=ShipmentStatusHistory.shipment_id, order_by=order_cols)
+            .over(
+                partition_by=ShipmentStatusHistory.shipment_id,
+                order_by=(
+            ShipmentStatusHistory.changed_at,
+            ShipmentStatusHistory.id,
+        ),
+            )
             .label("prev_status"),
             func.lag(ShipmentStatusHistory.changed_at)
-            .over(partition_by=ShipmentStatusHistory.shipment_id, order_by=order_cols)
+            .over(
+                partition_by=ShipmentStatusHistory.shipment_id,
+                order_by=(
+            ShipmentStatusHistory.changed_at,
+            ShipmentStatusHistory.id,
+        ),
+            )
             .label("prev_changed_at"),
         ).subquery()
         return select(
@@ -412,7 +517,10 @@ class AnalyticsRepository:
                 func.row_number()
                 .over(
                     partition_by=ShipmentStatusHistory.shipment_id,
-                    order_by=ShipmentStatusHistory.id,
+                    order_by=(
+            ShipmentStatusHistory.changed_at,
+            ShipmentStatusHistory.id,
+        ),
                 )
                 .label("rn"),
             )
