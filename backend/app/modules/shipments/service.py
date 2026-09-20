@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.common.exceptions import NotFoundError, ValidationError
 from app.common.transactions import transaction
 from app.core.database import utcnow
+from app.modules.alerts.service import AlertService
 from app.modules.audit_logs.service import AuditLogService
 from app.modules.inventory.service import InventoryService
 from app.modules.orders.repositories import OrderRepository
@@ -50,6 +51,7 @@ class ShipmentService:
         self.warehouses = WarehouseRepository(db)
         self.inventory = InventoryService(db)
         self.audit = AuditLogService(db)
+        self.alerts = AlertService(db)
 
     # ---- reads ----
 
@@ -118,6 +120,12 @@ class ShipmentService:
             # An initial PACKED history row reflects creation itself.
             now = utcnow()
             self.repo.add_history(shipment.id, ShipmentStatus.PACKED, actor.id, now)
+
+            self.alerts.reconcile_shipment_overdue(
+                shipment_id=shipment.id,
+                status=shipment.status,
+                expected_delivery_at=shipment.expected_delivery_at,
+            )
 
             self.audit.record(
                 user_id=actor.id,
@@ -192,6 +200,11 @@ class ShipmentService:
             self.repo.add_history(
                 shipment.id, ShipmentStatus.IN_TRANSIT, actor.id, now
             )
+            self.alerts.reconcile_shipment_overdue(
+                shipment_id=shipment.id,
+                status=shipment.status,
+                expected_delivery_at=shipment.expected_delivery_at,
+            )
             self.audit.record(
                 user_id=actor.id,
                 action="SHIPMENT_DISPATCHED",
@@ -228,6 +241,11 @@ class ShipmentService:
             self.db.flush()
 
             self.repo.add_history(shipment.id, ShipmentStatus.DELIVERED, actor.id, now)
+            self.alerts.reconcile_shipment_overdue(
+                shipment_id=shipment.id,
+                status=shipment.status,
+                expected_delivery_at=shipment.expected_delivery_at,
+            )
             self.audit.record(
                 user_id=actor.id,
                 action="SHIPMENT_DELIVERED",

@@ -80,7 +80,8 @@ paged selects and `meta`.
 ## Naming and versioning
 
 - API prefix: `/api/v1` (`API_PREFIX` in `app/main.py`).
-- All future resource routers mount below the prefix.
+- All resource routers (auth, users, suppliers, products, warehouses,
+  inventory, orders, shipments, alerts, analytics) mount below the prefix.
 - OpenAPI is discoverable at `/openapi.json`, `/docs`, `/redoc`.
 
 ## Transaction boundaries
@@ -157,29 +158,43 @@ Unit tests lock the specifications in (`tests/unit/test_state_machines.py`).
 | shipment transition history | `shipment_status_history` |
 | supplier master data | `suppliers` |
 | who changed what | `audit_logs` |
-| computed views | analytics (later stage) |
+| computed views | analytics — computed live, never stored |
 | derived conditions | `alerts` (read-only to clients) |
 
 No fact is duplicated as authoritative data in two tables. Analytics and alerts
 are always *derived* from operational tables, never written back into them as
 authoritative state.
 
-## Analytics principles (future)
+## Analytics principles (live)
 
-- Queries read operational tables only; nothing analytic is stored as facts.
-- Aggregations (inventory levels, bottleneck detection, supplier performance)
-  are computed at query time or into a derived/analytics layer, never as
-  authoritative operation columns.
+- Queries read operational tables only; nothing analytic is stored as facts
+  (there are no analytics/KPI tables).
+- All aggregation (overview, inventory distribution, movement trends, delivery
+  performance, supplier performance, bottleneck timings) runs in SQL:
+  window functions (`LAG` for stage pairing, `ROW_NUMBER` for first-PACKED,
+  `PERCENT_RANK` for p50/p90) over `shipment_status_history` and `audit_logs`;
+  conditional `CASE`-inside-aggregate (MySQL has no `FILTER`) for on-time/late
+  and distinct-conditioned counts.
+- Python (`AnalyticsRepository` → `AnalyticsService`) only formats results into
+  JSON-safe units (hours, on-time rates) and builds the bottleneck report.
 - `suppliers` holds no performance fields; performance is computed from
   orders/shipments/history at read time.
 
-## Alert principles (future)
+## Alert principles (live)
 
-- Alerts are produced from operational conditions (reactive on write, plus a
-  scheduled evaluator in `app/jobs/` later).
+- Alerts are produced from operational conditions: reactively on every write
+  path that can change the condition (inventory adjust/transfer/dispatch →
+  `LOW_STOCK`; shipment create/dispatch/deliver → `SHIPMENT_OVERDUE`), plus a
+  scheduled evaluator in `app/jobs/` for time-based conditions that flip
+  without a write (a shipment merely passing its expected delivery time).
+- The scheduled evaluator reconciles only the union of (potentially overdue
+  shipments) and (shipments behind unresolved overdue alerts) — it never
+  re-evaluates the whole table. It runs as `python -m app.jobs.scheduler`, or
+  in-app when `SCHEDULER_ENABLED=true` (`SCHEDULER_INTERVAL_SECONDS`, default
+  300). No Celery/Redis.
 - Alerts never become the source of truth for inventory or shipment state.
-- Clients can list/resolve alerts but can never set computed states such as
-  `status = DELAYED`.
+- The alerts API is read-only (`ALERTS_READ`); clients can list/get alerts but
+  can never set conditions or statuses (`status = DELAYED` is never persisted).
 
 ## Configuration
 

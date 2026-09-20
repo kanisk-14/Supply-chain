@@ -523,7 +523,11 @@ class TestServiceTransactionality:
         p_b = catalog.product(supplier_id=supplier["id"], sku="SKU-TXB")
         catalog.inventory(product_id=p_a["id"], warehouse_id=wh["id"], quantity=10)
         catalog.inventory(product_id=p_b["id"], warehouse_id=wh["id"], quantity=10)
-        actor = db_session.get(User, seed.user("txs@actor.com")["id"])
+        # Load the actor on a fresh session: reusing ``db_session`` here would
+        # open a REPEATABLE READ snapshot before the shipment exists (created on
+        # another session below), making it invisible to the service call.
+        with session_factory() as db:
+            actor = db.get(User, seed.user("txs@actor.com")["id"])
 
         with session_factory() as db:
             order = Order(created_by=actor.id, order_number="ORD-TXS-0001")

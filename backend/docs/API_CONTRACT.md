@@ -195,7 +195,7 @@ All order endpoints require authentication; state changes require roles.
 - **Errors:** 404, 409 INVALID_STATE_TRANSITION (FULFILLED cannot be cancelled).
 
 **Business rules:** every transition is validated by `OrderStateMachine`, writes
-an audit record, and (later) re-checks related alerts. Clients can never set
+an audit record, and re-checks related alerts. Clients can never set
 `status` directly.
 
 ---
@@ -222,8 +222,8 @@ an audit record, and (later) re-checks related alerts. Clients can never set
 ### POST /api/v1/shipments/{id}/deliver
 - **Transition:** `IN_TRANSIT → DELIVERED`; sets `actual_delivery_at`.
 - **Errors:** 404, 409 INVALID_STATE_TRANSITION.
-- **Business rules:** `DELIVERED` is terminal; on delivery the shipment's order
-  is evaluated for `FULFILLED` (all shipments delivered) in a later stage.
+- **Business rules:** `DELIVERED` is terminal; delivery resolves any open
+  SHIPMENT_OVERDUE alert for the shipment.
 
 ### GET /api/v1/shipments/{id}/history
 - **Response:** append-only history rows `{ status, changed_at, changed_by }`.
@@ -238,29 +238,52 @@ write is rejected by validation + the state machine.
 ## Alerts (read-only for clients)
 
 ### GET /api/v1/alerts
+- **Authorization:** any authenticated role (`ALERTS_READ`).
 - **Filters:** `type`, `severity`, `entity_type`, `entity_id`, `is_resolved`, pagination.
+- **Response (paged):** `{ id, type, severity, entity_type, entity_id, message,
+  is_resolved, created_at, resolved_at }`.
 
 ### GET /api/v1/alerts/{id}
 - **Errors:** 404.
 
-**Business rules:** alerts are derived conditions, never writable by clients;
-`is_resolved` is updated by operations/ops tooling (later stage), `resolved_at`
-set when resolved.
+**Business rules:** alerts are derived conditions — a cache of computed state,
+never the source of truth. There are no create/update/delete endpoints; clients
+cannot set operational conditions through alerts. Rules live:
+- `LOW_STOCK`: `inventory.quantity < product.reorder_threshold`, re-evaluated
+  reactively after every inventory adjust/transfer/dispatch and resolved once
+  every warehouse for the product is back at/above threshold.
+- `SHIPMENT_OVERDUE`: `expected_delivery_at < now AND status != DELIVERED`,
+  re-evaluated reactively on every shipment create/dispatch/deliver and by the
+  scheduled evaluator (`app/jobs/`).
+
+`is_resolved`/`resolved_at` are set automatically when the condition ceases;
+a later recurrence creates a fresh alert row (the resolved row is kept as
+history). Alerts are never manually resolved by clients.
 
 ---
 
-## Analytics (future)
+## Analytics (computed live)
 
-All require `ANALYST` (or ADMIN) and are paginated/date-filtered.
+All require `ANALYST` (or ADMIN) via `ANALYTICS_READ`; every other role can also
+read them. `period` ∈ {day, week, month}; `days` ∈ [1, 365].
 
 | endpoint | purpose |
 |---|---|
-| GET /api/v1/analytics/overview | global KPIs (orders, shipments, inventory) |
-| GET /api/v1/analytics/inventory | stock levels, turnover, low-stock |
-| GET /api/v1/analytics/shipments | in-transit/delivered/overdue aggregates |
+| GET /api/v1/analytics/overview | global KPIs (products, stock, low stock, active orders, in-transit, delayed) |
+| GET /api/v1/analytics/inventory | total/low stock, distribution by warehouse & product, movement trends |
+| GET /api/v1/analytics/shipments | delivered/delayed aggregates, avg delivery & delay hours, delivery performance |
 | GET /api/v1/analytics/suppliers | computed supplier performance from orders/shipments |
-| GET /api/v1/analytics/bottlenecks | slowest gateways derived from histories |
+| GET /api/v1/analytics/bottlenecks | time per lifecycle stage (confirm→packed, packed→transit, transit→delivered) |
 
-**Business rules:** all values are computed from operational tables; none are
-stored as authoritative data; ML models are explicitly future scope and are
-never part of the transactional schema.
+**Business rules:** every value is computed live via SQL aggregation over the
+operational tables — no KPI is stored (no analytics tables). Bottleneck stages
+and percentiles are computed with MySQL window functions
+(`LAG`/`ROW_NUMBER`/`PERCENT_RANK`) over `shipment_status_history` +
+`audit_logs`. Derived definitions used throughout:
+- on time: `expected IS NULL OR actual_delivery_at <= expected_delivery_at`
+- delayed: `expected_delivery_at < now AND status != DELIVERED`
+- avg delivery = `mean(actual_delivery_at - created_at)` over delivered shipments;
+  avg delay = `mean(actual_delivery_at - expected_delivery_at)` over late ones.
+
+ML models are explicitly future scope and are never part of the transactional
+schema.

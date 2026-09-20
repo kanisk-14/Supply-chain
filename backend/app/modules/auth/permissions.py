@@ -11,7 +11,7 @@ Permission coverage by role:
   shipment writes (create/dispatch/deliver).
 - SUPPLY_CHAIN_MANAGER — reads; master data (suppliers/products), warehouses,
   inventory and order writes (create/confirm/fulfill/cancel), and shipments.
-- ANALYST — read-only.
+- ANALYST — read-only (including analytics and alerts).
 
 Users are the exception: creating/updating users (including assigning roles) is
 ADMIN-only, so no user can grant themselves a higher role.
@@ -41,6 +41,8 @@ class Permission(str, Enum):
     ORDERS_WRITE = "orders:write"
     SHIPMENTS_READ = "shipments:read"
     SHIPMENTS_WRITE = "shipments:write"
+    ANALYTICS_READ = "analytics:read"
+    ALERTS_READ = "alerts:read"
 
 
 _ALL_PERMISSIONS = set(Permission)
@@ -59,6 +61,8 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.ORDERS_READ,
         Permission.SHIPMENTS_READ,
         Permission.SHIPMENTS_WRITE,
+        Permission.ANALYTICS_READ,
+        Permission.ALERTS_READ,
     },
     UserRole.SUPPLY_CHAIN_MANAGER: {
         Permission.USERS_READ,
@@ -75,6 +79,8 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.ORDERS_WRITE,
         Permission.SHIPMENTS_READ,
         Permission.SHIPMENTS_WRITE,
+        Permission.ANALYTICS_READ,
+        Permission.ALERTS_READ,
     },
     UserRole.ANALYST: {
         Permission.USERS_READ,
@@ -85,6 +91,8 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.INVENTORY_TRANSACTIONS_READ,
         Permission.ORDERS_READ,
         Permission.SHIPMENTS_READ,
+        Permission.ANALYTICS_READ,
+        Permission.ALERTS_READ,
     },
 }
 

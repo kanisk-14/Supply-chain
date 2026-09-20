@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import BigInteger, Boolean, String, func
+from sqlalchemy import BigInteger, Boolean, Index, String, func
 from sqlalchemy.dialects.mysql import DATETIME
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,6 +31,12 @@ class Alert(Base):
     """
 
     __tablename__ = "alerts"
+    __table_args__ = (
+        # Serve the filtered list endpoint (type + resolved/unresolved).
+        Index("ix_alerts_type_is_resolved", "type", "is_resolved"),
+        # Serve entity drill-downs and reconcile lookups by polymorphic ref.
+        Index("ix_alerts_entity_type_entity_id", "entity_type", "entity_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     type: Mapped[AlertType] = mapped_column(sa_enum(AlertType), nullable=False)

@@ -1,13 +1,18 @@
 """FastAPI application factory.
 
-Stage 3 scope: order and shipment lifecycle workflows (with state machines,
-append-only shipment history, derived delay calculation, and transactional
-inventory integration on dispatch) layered on the Stage 1 foundation (envelope,
-errors, pagination, repository/service split) and Stage 2 auth/RBAC.
-Analytics, ML, frontend, and scheduled jobs remain later stages.
+Stage 4 scope: live-computed analytics (overview, inventory, shipments,
+suppliers, bottlenecks) and a derived-conditions alert engine (LOW_STOCK,
+SHIPMENT_OVERDUE) with a read-only alerts API and an optional in-process
+scheduler, on top of Stages 1-3 (envelope/errors/pagination, auth/RBAC/master
+data, order + shipment lifecycle). ML, a GUI, and external integrations remain
+later stages.
 """
 
 from __future__ import annotations
+
+import threading
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,12 +34,56 @@ APP_DESCRIPTION = (
     "mutations; Stage 3 adds the order lifecycle (PLACED → CONFIRMED → "
     "FULFILLED/CANCELLED) and the shipment lifecycle (PACKED → IN_TRANSIT → "
     "DELIVERED) with append-only shipment history, derived delay tracking, and "
-    "inventory integration on dispatch. Endpoints are documented in "
-    "docs/API_CONTRACT.md."
+    "inventory integration on dispatch; Stage 4 adds live-computed analytics "
+    "and a derived-condition alert engine (LOW_STOCK, SHIPMENT_OVERDUE) with a "
+    "read-only alerts API and an optional in-process scheduler. Endpoints are "
+    "documented in docs/API_CONTRACT.md."
 )
 
 
+def _scheduler_thread(stop_event: threading.Event) -> threading.Thread:
+    """Background thread running the scheduled SHIPMENT_OVERDUE evaluator."""
+    from app.jobs.scheduler import run_loop
+
+    thread = threading.Thread(
+        target=run_loop,
+        kwargs={
+            "interval_seconds": settings.SCHEDULER_INTERVAL_SECONDS,
+            "stop_event": stop_event,
+        },
+        daemon=True,
+        name="overdue-alert-scheduler",
+    )
+    thread.start()
+    return thread
+
+
 def create_app() -> FastAPI:
+    lifespan_stop_event: threading.Event | None = None
+    lifespan_thread: threading.Thread | None = None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        nonlocal lifespan_stop_event, lifespan_thread
+        if settings.SCHEDULER_ENABLED:
+            lifespan_stop_event = threading.Event()
+            lifespan_thread = _scheduler_thread(lifespan_stop_event)
+        try:
+            yield
+        finally:
+            if lifespan_thread is not None and lifespan_stop_event is not None:
+                lifespan_stop_event.set()
+                lifespan_thread.join(timeout=10)
+
+    app = FastAPI(
+        title=APP_TITLE,
+        description=APP_DESCRIPTION,
+        version="0.4.0",
+        lifespan=lifespan,
+        openapi_url="/openapi.json",
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
     app = FastAPI(
         title=APP_TITLE,
         description=APP_DESCRIPTION,
@@ -77,6 +126,8 @@ def create_app() -> FastAPI:
             message="Health check",
         )
 
+    from app.modules.alerts.router import router as alerts_router
+    from app.modules.analytics.router import router as analytics_router
     from app.modules.auth.router import router as auth_router
     from app.modules.inventory.router import router as inventory_router
     from app.modules.orders.router import router as orders_router
@@ -95,6 +146,8 @@ def create_app() -> FastAPI:
         inventory_router,
         orders_router,
         shipments_router,
+        alerts_router,
+        analytics_router,
     ):
         app.include_router(router, prefix=API_PREFIX)
 

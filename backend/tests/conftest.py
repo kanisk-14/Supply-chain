@@ -102,7 +102,14 @@ def _reset_schema(engine) -> None:
 
 @pytest.fixture()
 def session_factory(test_database):
-    """A fresh sessionmaker bound to the isolated test schema."""
+    """A fresh sessionmaker bound to a per-test isolated schema.
+
+    ``test_database`` is session-scoped, so every DB-backed test resets the
+    schema here (like ``api_client`` does) to guarantee a clean slate —
+    otherwise state left by an earlier test leaks into ``_count == 0`` style
+    assertions and makes the suite order-dependent.
+    """
+    _reset_schema(test_database)
     return sessionmaker(
         bind=test_database, autoflush=False, expire_on_commit=False
     )
@@ -110,6 +117,7 @@ def session_factory(test_database):
 
 @pytest.fixture()
 def db_session(test_database):
+    _reset_schema(test_database)
     session_factory = sessionmaker(
         bind=test_database, autoflush=False, expire_on_commit=False
     )

@@ -70,6 +70,21 @@ class ShipmentRepository:
             select(Shipment).where(Shipment.id == shipment_id)
         ).scalar_one_or_none()
 
+    def list_potentially_overdue(self, now: datetime) -> list[Shipment]:
+        """Shipments that may now be overdue (``expected < now``, not delivered).
+
+        This is the targeted candidate set for the scheduled SHIPMENT_OVERDUE
+        evaluator — it never scans every shipment, only the ones the time-based
+        rule could have just flipped for.
+        """
+        return self.db.execute(
+            select(Shipment).where(
+                Shipment.expected_delivery_at.isnot(None),
+                Shipment.expected_delivery_at < now,
+                Shipment.status != ShipmentStatus.DELIVERED,
+            )
+        ).scalars().all()
+
     def add(self, shipment: Shipment) -> None:
         self.db.add(shipment)
         self.db.flush()

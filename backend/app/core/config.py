@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # CORS — comma-separated list of allowed origins
     CORS_ORIGINS: str = "http://localhost:3000"
 
+    # Scheduled alert evaluator (Stage 4). A lightweight in-process daemon
+    # polls for time-based conditions (e.g. overdue shipments) every
+    # SCHEDULER_INTERVAL_SECONDS. Enabled only when explicitly turned on; the
+    # same check is also exposed as ``python -m app.jobs.scheduler``.
+    SCHEDULER_ENABLED: bool = False
+    SCHEDULER_INTERVAL_SECONDS: int = 300
+
     @field_validator("ENVIRONMENT")
     @classmethod
     def _validate_environment(cls, value: str) -> str:
