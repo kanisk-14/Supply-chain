@@ -183,6 +183,17 @@ export default function ShipmentDetailsPage() {
                 <StatusBadge status={shipment.status} />
                 {shipment.is_delayed && <StatusBadge isDelayed={true} />}
               </div>
+              {shipment.tracking_number && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Public tracking:{" "}
+                  <Link
+                    href={`/tracking/${encodeURIComponent(shipment.tracking_number)}`}
+                    className="font-mono font-semibold text-indigo-600 hover:underline"
+                  >
+                    {shipment.tracking_number}
+                  </Link>
+                </p>
+              )}
 
               {/* State Machine Transition Actions */}
               {canWriteShipments && (

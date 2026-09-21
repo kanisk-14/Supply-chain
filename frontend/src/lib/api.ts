@@ -1,6 +1,7 @@
 import {
   ApiResponse,
   ApiPagedResponse,
+  PublicTrackingInfo,
   User,
   Supplier,
   Product,
@@ -450,6 +451,16 @@ export const alertsApi = {
   },
   get: async (id: number): Promise<Alert> => {
     const res = await request<ApiResponse<Alert>>(`/alerts/${id}`);
+    return res.data;
+  },
+};
+
+// ------------------- PUBLIC TRACKING (no authentication required) -------------------
+export const trackingApi = {
+  get: async (trackingNumber: string): Promise<PublicTrackingInfo> => {
+    const res = await request<ApiResponse<PublicTrackingInfo>>(
+      `/public/tracking/${encodeURIComponent(trackingNumber.trim())}`
+    );
     return res.data;
   },
 };

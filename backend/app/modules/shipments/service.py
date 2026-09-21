@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.common.exceptions import NotFoundError, ValidationError
+from app.common.exceptions import ConflictError, NotFoundError, ValidationError
 from app.common.transactions import transaction
 from app.core.database import utcnow
 from app.modules.alerts.service import AlertService
@@ -30,17 +30,20 @@ from app.modules.audit_logs.service import AuditLogService
 from app.modules.inventory.service import InventoryService
 from app.modules.orders.repositories import OrderRepository
 from app.modules.orders.models import OrderStatus
-from app.modules.shipments.models import Shipment
+from app.modules.shipments.models import Shipment, generate_tracking_number
 from app.modules.shipments.repositories import ShipmentRepository
 from app.modules.shipments.schemas import (
     ShipmentCreate,
     ShipmentDispatchRequest,
     history_payload,
+    public_tracking_payload,
     shipment_payload,
 )
 from app.modules.users.models import User, UserRole
 from app.modules.warehouses.repositories import WarehouseRepository
 from app.state_machines.shipment import ShipmentStatus, shipment_state_machine
+
+TRACKING_NUMBER_ATTEMPTS = 10
 
 
 class ShipmentService:
@@ -95,6 +98,33 @@ class ShipmentService:
         self._get_or_raise(shipment_id)
         return [history_payload(row) for row in self.repo.list_history(shipment_id)]
 
+    def get_public_tracking(self, tracking_number: str) -> dict:
+        """Public tracking view — no actor, no permissions, no internal data.
+
+        Reuses the same shipment rows and append-only history as the internal
+        API; only the projection differs (see ``public_tracking_payload``).
+        """
+        normalized = (tracking_number or "").strip().upper()
+        shipment = self.repo.get_by_tracking_number(normalized)
+        if shipment is None:
+            raise NotFoundError(
+                f"Shipment with tracking number '{tracking_number}' not found"
+            )
+        history_rows = self.repo.list_history(shipment.id)
+        return public_tracking_payload(shipment, history_rows)
+
+    def _generate_tracking_number(self) -> str:
+        """Generate a unique public tracking number.
+
+        Candidates come from the single shared generator in models; retried
+        on collision, with the database unique constraint as final backstop.
+        """
+        for _ in range(TRACKING_NUMBER_ATTEMPTS):
+            candidate = generate_tracking_number()
+            if self.repo.get_by_tracking_number(candidate) is None:
+                return candidate
+        raise ConflictError("Could not generate a unique tracking number")
+
     # ---- create ----
 
     def create(self, payload: ShipmentCreate, *, actor: User) -> dict:
@@ -115,6 +145,7 @@ class ShipmentService:
                 order_id=order.id,
                 created_by=actor.id,
                 expected_delivery_at=payload.expected_delivery_at,
+                tracking_number=self._generate_tracking_number(),
                 # Pending placeholder so the insert satisfies the NOT NULL
                 # unique column; replaced by the deterministic id-based number
                 # right after flush, within the same transaction.

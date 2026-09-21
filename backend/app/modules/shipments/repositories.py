@@ -74,6 +74,12 @@ class ShipmentRepository:
             select(Shipment).where(Shipment.id == shipment_id)
         ).scalar_one_or_none()
 
+    def get_by_tracking_number(self, tracking_number: str) -> Shipment | None:
+        """Fetch a shipment by its public tracking number (exact match)."""
+        return self.db.execute(
+            select(Shipment).where(Shipment.tracking_number == tracking_number)
+        ).scalar_one_or_none()
+
     def list_potentially_overdue(
         self, now: datetime
     ) -> list[tuple[int, ShipmentStatus, datetime | None]]:

@@ -119,6 +119,7 @@ export type ShipmentStatus = "PACKED" | "IN_TRANSIT" | "DELIVERED";
 export interface Shipment {
   id: number;
   shipment_number: string;
+  tracking_number: string;
   order_id: number;
   status: ShipmentStatus;
   expected_delivery_at: string | null;
@@ -135,6 +136,23 @@ export interface ShipmentStatusHistory {
   status: ShipmentStatus;
   changed_at: string;
   changed_by: number;
+}
+
+// Public (unauthenticated) package tracking projection. Mirrors the
+// backend public_tracking_payload: no ids, no order/user/warehouse
+// references, no supplier/inventory/audit data.
+export interface PublicTrackingEvent {
+  status: ShipmentStatus | string;
+  changed_at: string;
+}
+
+export interface PublicTrackingInfo {
+  tracking_number: string;
+  status: ShipmentStatus | string;
+  is_delayed: boolean;
+  expected_delivery_at: string | null;
+  actual_delivery_at: string | null;
+  timeline: PublicTrackingEvent[];
 }
 
 export type AlertType = "LOW_STOCK" | "SHIPMENT_OVERDUE";

@@ -36,6 +36,7 @@ class ShipmentRead(BaseModel):
 
     id: int
     shipment_number: str
+    tracking_number: str
     order_id: int
     status: ShipmentStatus
     expected_delivery_at: datetime | None
@@ -75,3 +76,41 @@ def shipment_payload(shipment: Any) -> dict:
 
 def history_payload(entry: Any) -> dict:
     return ShipmentStatusHistoryRead.model_validate(entry).model_dump(mode="json")
+
+
+def public_tracking_payload(shipment: Any, history_rows: list[Any]) -> dict:
+    """End-user tracking view.
+
+    Deliberately exposes only what a recipient needs: the public tracking
+    number, current status, delivery timestamps, derived delay state, and the
+    status timeline (status + timestamp per step, ascending). Internal database
+    ids, order/user/warehouse references, supplier/inventory data, audit info,
+    and permissions never leave the server here.
+    """
+    status = shipment.status
+    return {
+        "tracking_number": shipment.tracking_number,
+        "status": status.value if hasattr(status, "value") else status,
+        "is_delayed": is_delayed(shipment.expected_delivery_at, shipment.status),
+        "expected_delivery_at": (
+            shipment.expected_delivery_at.isoformat()
+            if shipment.expected_delivery_at
+            else None
+        ),
+        "actual_delivery_at": (
+            shipment.actual_delivery_at.isoformat()
+            if shipment.actual_delivery_at
+            else None
+        ),
+        "timeline": [
+            {
+                "status": (
+                    entry.status.value
+                    if hasattr(entry.status, "value")
+                    else entry.status
+                ),
+                "changed_at": entry.changed_at.isoformat(),
+            }
+            for entry in history_rows
+        ],
+    }

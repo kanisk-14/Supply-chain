@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from datetime import datetime
 
 from sqlalchemy import BigInteger, ForeignKey, String, func
@@ -8,6 +9,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base, TimestampMixin, sa_enum, utcnow
 from app.state_machines.shipment import ShipmentStatus
+
+TRACKING_NUMBER_PREFIX = "TRK-"
+
+
+def generate_tracking_number() -> str:
+    """New random public tracking identifier (``TRK-XXXXXXXX``).
+
+    Random and non-sequential (unlike the deterministic internal
+    ``shipment_number``) so it is safe to share with end users. Used as the
+    column default so every insert path yields a valid value; the creation
+    service additionally guarantees uniqueness before insert.
+    """
+    return f"{TRACKING_NUMBER_PREFIX}{secrets.token_hex(4).upper()}"
 
 
 class Shipment(TimestampMixin, Base):
@@ -22,6 +36,20 @@ class Shipment(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     shipment_number: Mapped[str] = mapped_column(
         String(32), nullable=False, unique=True, index=True
+    )
+    # Public tracking identifier. Random and non-sequential (unlike
+    # shipment_number) so it is safe to share with end users. Generated once
+    # at creation, never updated by any service path, and the only shipment
+    # identifier exposed on the unauthenticated public tracking endpoint.
+    # The Python-side default keeps every insert path (including direct ORM
+    # construction in older code/tests) valid; the service still assigns an
+    # explicitly uniqueness-checked value on creation.
+    tracking_number: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        unique=True,
+        index=True,
+        default=generate_tracking_number,
     )
     order_id: Mapped[int] = mapped_column(
         ForeignKey("orders.id", ondelete="RESTRICT"), nullable=False, index=True

@@ -143,6 +143,7 @@ def create_app() -> FastAPI:
     from app.modules.inventory.router import router as inventory_router
     from app.modules.orders.router import router as orders_router
     from app.modules.products.router import router as products_router
+    from app.modules.shipments.public_router import router as public_tracking_router
     from app.modules.shipments.router import router as shipments_router
     from app.modules.suppliers.router import router as suppliers_router
     from app.modules.users.router import router as users_router
@@ -150,6 +151,7 @@ def create_app() -> FastAPI:
 
     for router in (
         auth_router,
+        public_tracking_router,
         users_router,
         suppliers_router,
         products_router,
