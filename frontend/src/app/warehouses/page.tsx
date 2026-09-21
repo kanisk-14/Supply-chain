@@ -143,7 +143,7 @@ export default function WarehousesPage() {
   ];
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["warehouses:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Header */}

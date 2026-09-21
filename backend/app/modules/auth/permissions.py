@@ -7,11 +7,12 @@ single edit and roles can never silently drift apart.
 Permission coverage by role:
 
 - ADMIN — everything.
-- WAREHOUSE_MANAGER — reads across the system; warehouse, inventory and
-  shipment writes (create/dispatch/deliver).
-- SUPPLY_CHAIN_MANAGER — reads; master data (suppliers/products), warehouses,
-  inventory and order writes (create/confirm/fulfill/cancel), and shipments.
-- ANALYST — read-only (including analytics and alerts).
+- WAREHOUSE_MANAGER — warehouse/inventory operations scoped to assigned warehouse;
+  relevant orders/shipments; relevant warehouse/inventory alerts.
+- SUPPLY_CHAIN_MANAGER — suppliers, products, orders, shipments; inventory
+  visibility (read); supply-chain analytics; relevant alerts.
+- ANALYST — read-only analytics/reporting; relevant inventory/shipment/supplier/
+  alert data; NO operational mutations.
 
 Users are the exception: creating/updating users (including assigning roles) is
 ADMIN-only, so no user can grant themselves a higher role.
@@ -50,9 +51,6 @@ _ALL_PERMISSIONS = set(Permission)
 ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
     UserRole.ADMIN: _ALL_PERMISSIONS,
     UserRole.WAREHOUSE_MANAGER: {
-        Permission.USERS_READ,
-        Permission.SUPPLIERS_READ,
-        Permission.PRODUCTS_READ,
         Permission.WAREHOUSES_READ,
         Permission.WAREHOUSES_WRITE,
         Permission.INVENTORY_READ,
@@ -61,17 +59,14 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.ORDERS_READ,
         Permission.SHIPMENTS_READ,
         Permission.SHIPMENTS_WRITE,
-        Permission.ANALYTICS_READ,
         Permission.ALERTS_READ,
     },
     UserRole.SUPPLY_CHAIN_MANAGER: {
-        Permission.USERS_READ,
         Permission.SUPPLIERS_READ,
         Permission.SUPPLIERS_WRITE,
         Permission.PRODUCTS_READ,
         Permission.PRODUCTS_WRITE,
         Permission.WAREHOUSES_READ,
-        Permission.WAREHOUSES_WRITE,
         Permission.INVENTORY_READ,
         Permission.INVENTORY_WRITE,
         Permission.INVENTORY_TRANSACTIONS_READ,
@@ -83,15 +78,10 @@ ROLE_PERMISSIONS: dict[UserRole, set[Permission]] = {
         Permission.ALERTS_READ,
     },
     UserRole.ANALYST: {
-        Permission.USERS_READ,
-        Permission.SUPPLIERS_READ,
-        Permission.PRODUCTS_READ,
-        Permission.WAREHOUSES_READ,
-        Permission.INVENTORY_READ,
-        Permission.INVENTORY_TRANSACTIONS_READ,
-        Permission.ORDERS_READ,
-        Permission.SHIPMENTS_READ,
         Permission.ANALYTICS_READ,
+        Permission.INVENTORY_READ,
+        Permission.SHIPMENTS_READ,
+        Permission.SUPPLIERS_READ,
         Permission.ALERTS_READ,
     },
 }

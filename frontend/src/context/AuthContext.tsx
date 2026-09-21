@@ -4,73 +4,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { User, UserRole, Permission } from "@/types/api";
 import { authApi, getStoredToken, setStoredToken, removeStoredToken } from "@/lib/api";
 import { useRouter } from "next/navigation";
-
-const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
-  ADMIN: [
-    "users:read",
-    "users:write",
-    "suppliers:read",
-    "suppliers:write",
-    "products:read",
-    "products:write",
-    "warehouses:read",
-    "warehouses:write",
-    "inventory:read",
-    "inventory:write",
-    "inventory:transactions:read",
-    "orders:read",
-    "orders:write",
-    "shipments:read",
-    "shipments:write",
-    "analytics:read",
-    "alerts:read",
-  ],
-  WAREHOUSE_MANAGER: [
-    "users:read",
-    "suppliers:read",
-    "products:read",
-    "warehouses:read",
-    "warehouses:write",
-    "inventory:read",
-    "inventory:write",
-    "inventory:transactions:read",
-    "orders:read",
-    "shipments:read",
-    "shipments:write",
-    "analytics:read",
-    "alerts:read",
-  ],
-  SUPPLY_CHAIN_MANAGER: [
-    "users:read",
-    "suppliers:read",
-    "suppliers:write",
-    "products:read",
-    "products:write",
-    "warehouses:read",
-    "warehouses:write",
-    "inventory:read",
-    "inventory:write",
-    "inventory:transactions:read",
-    "orders:read",
-    "orders:write",
-    "shipments:read",
-    "shipments:write",
-    "analytics:read",
-    "alerts:read",
-  ],
-  ANALYST: [
-    "users:read",
-    "suppliers:read",
-    "products:read",
-    "warehouses:read",
-    "inventory:read",
-    "inventory:transactions:read",
-    "orders:read",
-    "shipments:read",
-    "analytics:read",
-    "alerts:read",
-  ],
-};
+import { hasPermission as checkPermission, hasRole as checkRole, ROLE_PERMISSIONS } from "@/config/navigation";
 
 interface AuthContextType {
   user: User | null;
@@ -82,6 +16,7 @@ interface AuthContextType {
   hasPermission: (...permissions: Permission[]) => boolean;
   hasRole: (...roles: UserRole[]) => boolean;
   refreshUser: () => Promise<void>;
+  userPermissions: Permission[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -147,14 +82,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasPermission = (...permissions: Permission[]): boolean => {
     if (!user) return false;
-    const userPermissions = ROLE_PERMISSIONS[user.role] || [];
-    return permissions.every((p) => userPermissions.includes(p));
+    return checkPermission(user.role, ...permissions);
   };
 
   const hasRole = (...roles: UserRole[]): boolean => {
     if (!user) return false;
-    return roles.includes(user.role);
+    return checkRole(user.role, ...roles);
   };
+
+  const userPermissions = user ? ROLE_PERMISSIONS[user.role] || [] : [];
 
   return (
     <AuthContext.Provider
@@ -168,6 +104,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         hasPermission,
         hasRole,
         refreshUser,
+        userPermissions,
       }}
     >
       {children}

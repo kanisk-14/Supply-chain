@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, or_, func, select
 from sqlalchemy.orm import Session
 
 from app.common.pagination import apply_pagination, count_total
@@ -32,6 +32,7 @@ class AlertRepository:
         entity_type: str | None = None,
         entity_id: int | None = None,
         is_resolved: bool | None = None,
+        warehouse_id: int | None = None,
     ) -> AlertListResult:
         stmt: Select[tuple[Alert]] = select(Alert)
         if alert_type is not None:
@@ -44,6 +45,40 @@ class AlertRepository:
             stmt = stmt.where(Alert.entity_id == entity_id)
         if is_resolved is not None:
             stmt = stmt.where(Alert.is_resolved.is_(is_resolved))
+        if warehouse_id is not None:
+            # Filter alerts relevant to the warehouse:
+            # - LOW_STOCK: join through inventory (product + warehouse)
+            # - SHIPMENT_OVERDUE: join through shipments (shipment.warehouse_id)
+            from app.modules.inventory.models import Inventory
+            from app.modules.shipments.models import Shipment
+            from sqlalchemy import or_
+            
+            low_stock_filter = and_(
+                Alert.type == AlertType.LOW_STOCK,
+                Alert.entity_type == "product",
+                Alert.entity_id == Inventory.product_id,
+                Inventory.warehouse_id == warehouse_id,
+            )
+            shipment_overdue_filter = and_(
+                Alert.type == AlertType.SHIPMENT_OVERDUE,
+                Alert.entity_type == "shipment",
+                Alert.entity_id == Shipment.id,
+                Shipment.warehouse_id == warehouse_id,
+            )
+            stmt = stmt.where(
+                or_(
+                    low_stock_filter,
+                    shipment_overdue_filter,
+                )
+            ).join(
+                Inventory, 
+                and_(Alert.type == AlertType.LOW_STOCK, Alert.entity_type == "product", Alert.entity_id == Inventory.product_id),
+                isouter=True
+            ).join(
+                Shipment,
+                and_(Alert.type == AlertType.SHIPMENT_OVERDUE, Alert.entity_type == "shipment", Alert.entity_id == Shipment.id),
+                isouter=True
+            )
         total = count_total(self.db, stmt, Alert.id)
         items = self.db.execute(
             apply_pagination(

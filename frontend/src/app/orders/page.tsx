@@ -177,7 +177,7 @@ export default function OrdersPage() {
   ];
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["orders:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Header */}

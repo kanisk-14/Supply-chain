@@ -18,24 +18,36 @@ from app.modules.inventory.models import (
     InventoryTransactionType,
 )
 from app.modules.users.models import User, UserRole
+from sqlalchemy import select
 from tests.conftest import login
 
 
-def _warehouse_manager_headers(api_client, seed):
+def _warehouse_manager_headers(api_client, seed, warehouse_id: int):
     account = seed.user("wm@inv.com", role=UserRole.WAREHOUSE_MANAGER)
+    # Assign warehouse for scoping
+    with seed.session_factory() as db:
+        user = db.get(User, account["id"])
+        user.warehouse_id = warehouse_id
+        db.commit()
+    token = login(api_client, account["email"], account["password"])
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _scm_headers(api_client, seed):
+    account = seed.user("scm@inv.com", role=UserRole.SUPPLY_CHAIN_MANAGER)
     token = login(api_client, account["email"], account["password"])
     return {"Authorization": f"Bearer {token}"}
 
 
 def _setup(api_client, seed, catalog, threshold=10):
     """Return headers plus a supplier/warehouses/product ready to stock."""
-    headers = _warehouse_manager_headers(api_client, seed)
     supplier = catalog.supplier(code="SUP-INV")
     wh_a = catalog.warehouse(code="WH-A", name="Warehouse A")
     wh_b = catalog.warehouse(code="WH-B", name="Warehouse B")
     product = catalog.product(
         supplier_id=supplier["id"], sku="SKU-INV", reorder_threshold=threshold
     )
+    headers = _warehouse_manager_headers(api_client, seed, wh_a["id"])
     return {
         "headers": headers,
         "supplier": supplier,
@@ -416,7 +428,10 @@ class TestHistoryAndAlerts:
             headers=ctx["headers"],
         )
 
-        listing = api_client.get("/api/v1/inventory/transactions", headers=ctx["headers"])
+        # Use SUPPLY_CHAIN_MANAGER for cross-warehouse filtering tests
+        scm_headers = _scm_headers(api_client, seed)
+
+        listing = api_client.get("/api/v1/inventory/transactions", headers=scm_headers)
         assert listing.status_code == 200
         data = listing.json()["data"]
         assert [t["type"] for t in data] == [
@@ -428,28 +443,28 @@ class TestHistoryAndAlerts:
         only_out = api_client.get(
             "/api/v1/inventory/transactions",
             params={"type": "TRANSFER_OUT"},
-            headers=ctx["headers"],
+            headers=scm_headers,
         )
         assert [t["type"] for t in only_out.json()["data"]] == ["TRANSFER_OUT"]
 
         by_product = api_client.get(
             "/api/v1/inventory/transactions",
             params={"product_id": ctx["product"]["id"]},
-            headers=ctx["headers"],
+            headers=scm_headers,
         )
         assert by_product.json()["data"]
 
         for_entry = api_client.get(
             "/api/v1/inventory/transactions",
             params={"warehouse_id": ctx["warehouse_b"]["id"]},
-            headers=ctx["headers"],
+            headers=scm_headers,
         )
         assert [t["type"] for t in for_entry.json()["data"]] == ["TRANSFER_IN"]
 
         for_exit = api_client.get(
             "/api/v1/inventory/transactions",
             params={"warehouse_id": ctx["warehouse_a"]["id"]},
-            headers=ctx["headers"],
+            headers=scm_headers,
         )
         assert [t["type"] for t in for_exit.json()["data"]] == [
             "TRANSFER_OUT",
@@ -542,7 +557,8 @@ class TestInventoryReads:
         assert all(r["below_threshold"] is False for r in above.json()["data"])
 
     @pytest.mark.db
-    def test_missing_inventory_404(self, api_client, seed):
-        headers = _warehouse_manager_headers(api_client, seed)
+    def test_missing_inventory_404(self, api_client, seed, catalog):
+        wh_a = catalog.warehouse(code="WH-404")
+        headers = _warehouse_manager_headers(api_client, seed, wh_a["id"])
         response = api_client.get("/api/v1/inventory/999999", headers=headers)
         assert response.status_code == 404

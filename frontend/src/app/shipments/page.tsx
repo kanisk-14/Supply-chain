@@ -159,7 +159,7 @@ export default function ShipmentsPage() {
   ];
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["shipments:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Header */}

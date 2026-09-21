@@ -36,6 +36,7 @@ class OrderRepository:
         created_by: int | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
+        warehouse_id: int | None = None,
     ) -> OrderListResult:
         stmt: Select[tuple[Order]] = select(Order)
         if status is not None:
@@ -46,6 +47,12 @@ class OrderRepository:
             stmt = stmt.where(Order.created_at >= start)
         if end is not None:
             stmt = stmt.where(Order.created_at <= end)
+        if warehouse_id is not None:
+            # Filter orders that have shipments dispatched from the given warehouse
+            from app.modules.shipments.models import Shipment
+            stmt = stmt.where(
+                Order.shipments.any(Shipment.warehouse_id == warehouse_id)
+            )
         total = count_total(self.db, stmt, Order.id)
         items = self.db.execute(
             apply_pagination(stmt.order_by(Order.id.desc()), page, limit)

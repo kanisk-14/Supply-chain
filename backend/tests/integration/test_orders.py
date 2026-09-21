@@ -311,15 +311,14 @@ class TestOrderAuthorization:
         assert response.status_code == 403
 
     @pytest.mark.db
-    def test_analyst_can_read_orders(self, api_client, seed, catalog):
+    def test_analyst_forbidden_on_orders_read(self, api_client, seed, catalog):
         ctx = _setup(api_client, seed, catalog)
         _create_order(api_client, ctx["headers"], [{"product_id": ctx["p1"]["id"], "quantity": 1}])
         analyst_headers = _headers_for(
             api_client, seed, UserRole.ANALYST, "analyst-read@orders.com"
         )
         listing = api_client.get("/api/v1/orders", headers=analyst_headers)
-        assert listing.status_code == 200
-        assert listing.json()["meta"]["total"] == 1
+        assert listing.status_code == 403
 
     @pytest.mark.db
     def test_analyst_cannot_confirm_order_403(self, api_client, seed, catalog):

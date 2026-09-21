@@ -187,7 +187,7 @@ export default function SuppliersPage() {
   ];
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["suppliers:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Header */}

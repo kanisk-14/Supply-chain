@@ -207,7 +207,7 @@ export default function ProductsPage() {
   ];
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["products:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Header */}

@@ -35,6 +35,7 @@ from app.modules.alerts.models import Alert, AlertSeverity, AlertType
 from app.modules.alerts.repositories import AlertRepository
 from app.modules.alerts.schemas import alert_payload
 from app.state_machines.shipment import ShipmentStatus
+from app.modules.users.models import User, UserRole
 
 
 class AlertService:
@@ -44,7 +45,24 @@ class AlertService:
 
     # ---- reads (API) ----
 
-    def list(self, *, page, limit, alert_type=None, severity=None, entity_type=None, entity_id=None, is_resolved=None) -> dict:
+    def list(
+        self,
+        *,
+        page,
+        limit,
+        alert_type=None,
+        severity=None,
+        entity_type=None,
+        entity_id=None,
+        is_resolved=None,
+        actor: User | None = None,
+    ) -> dict:
+        if actor is not None and actor.role == UserRole.WAREHOUSE_MANAGER:
+            if actor.warehouse_id is None:
+                return {"items": [], "total": 0}
+            warehouse_id = actor.warehouse_id
+        else:
+            warehouse_id = None
         result = self.repo.list(
             page=page,
             limit=limit,
@@ -53,6 +71,7 @@ class AlertService:
             entity_type=entity_type,
             entity_id=entity_id,
             is_resolved=is_resolved,
+            warehouse_id=warehouse_id,
         )
         return {
             "items": [alert_payload(a) for a in result.items],

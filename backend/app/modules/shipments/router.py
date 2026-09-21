@@ -34,7 +34,7 @@ def list_shipments(
     is_delayed: bool | None = Query(default=None),
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    _user: User = Depends(require_permissions(Permission.SHIPMENTS_READ)),
+    actor: User = Depends(require_permissions(Permission.SHIPMENTS_READ)),
     db=Depends(get_db),
 ) -> dict:
     service = ShipmentService(db)
@@ -46,6 +46,7 @@ def list_shipments(
         is_delayed=is_delayed,
         start=start,
         end=end,
+        actor=actor,
     )
     resolved_page, resolved_limit = resolve_pagination(page, limit)
     return build_paged_response(

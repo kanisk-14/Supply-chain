@@ -25,6 +25,9 @@ export default function ShipmentDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const { hasPermission } = useAuth();
   const canWriteShipments = hasPermission("shipments:write");
+  // ANALYST can read shipments but not warehouses: only fetch the warehouse
+  // list when permitted so the dropdown never produces a 403.
+  const canReadWarehouses = hasPermission("warehouses:read");
 
   const [shipment, setShipment] = useState<Shipment | null>(null);
   const [history, setHistory] = useState<ShipmentStatusHistory[]>([]);
@@ -45,7 +48,9 @@ export default function ShipmentDetailsPage() {
       const [shipmentData, historyData, whData] = await Promise.all([
         shipmentsApi.get(Number(id)),
         shipmentsApi.history(Number(id)),
-        warehousesApi.list({ limit: 100 }),
+        canReadWarehouses
+          ? warehousesApi.list({ limit: 100 })
+          : Promise.resolve({ data: [] as Warehouse[] }),
       ]);
       setShipment(shipmentData);
       setHistory(historyData);
@@ -55,7 +60,7 @@ export default function ShipmentDetailsPage() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, canReadWarehouses]);
 
   useEffect(() => {
     loadShipmentAndHistory();
@@ -122,7 +127,7 @@ export default function ShipmentDetailsPage() {
 
   if (loading) {
     return (
-      <ProtectedRoute>
+      <ProtectedRoute requiredPermissions={["shipments:read"]}>
         <AppLayout>
           <div className="flex h-64 items-center justify-center">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-600 border-t-transparent" />
@@ -134,7 +139,7 @@ export default function ShipmentDetailsPage() {
 
   if (!shipment) {
     return (
-      <ProtectedRoute>
+      <ProtectedRoute requiredPermissions={["shipments:read"]}>
         <AppLayout>
           <div className="text-center py-12">
             <p className="text-sm font-semibold text-slate-700">Shipment not found.</p>
@@ -159,7 +164,7 @@ export default function ShipmentDetailsPage() {
   const currentStageIndex = stages.findIndex((s) => s.key === shipment.status);
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["shipments:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Top Bar */}

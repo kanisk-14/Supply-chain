@@ -31,7 +31,7 @@ def list_inventory(
     product_id: int | None = Query(default=None),
     warehouse_id: int | None = Query(default=None),
     below_threshold: bool | None = Query(default=None),
-    _user: User = Depends(require_permissions(Permission.INVENTORY_READ)),
+    actor: User = Depends(require_permissions(Permission.INVENTORY_READ)),
     db=Depends(get_db),
 ) -> dict:
     service = InventoryService(db)
@@ -41,6 +41,7 @@ def list_inventory(
         product_id=product_id,
         warehouse_id=warehouse_id,
         below_threshold=below_threshold,
+        actor=actor,
     )
     resolved_page, resolved_limit = resolve_pagination(page, limit)
     return build_paged_response(
@@ -95,7 +96,7 @@ def list_transactions(
     type: InventoryTransactionType | None = Query(default=None),
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    _user: User = Depends(require_permissions(Permission.INVENTORY_TRANSACTIONS_READ)),
+    actor: User = Depends(require_permissions(Permission.INVENTORY_TRANSACTIONS_READ)),
     db=Depends(get_db),
 ) -> dict:
     service = InventoryService(db)
@@ -107,6 +108,7 @@ def list_transactions(
         txn_type=type,
         start=start,
         end=end,
+        actor=actor,
     )
     resolved_page, resolved_limit = resolve_pagination(page, limit)
     return build_paged_response(

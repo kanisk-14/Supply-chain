@@ -31,7 +31,7 @@ def list_alerts(
     entity_type: str | None = Query(default=None, min_length=1, max_length=32),
     entity_id: int | None = Query(default=None),
     resolved: bool | None = Query(default=None),
-    _user: User = Depends(require_permissions(Permission.ALERTS_READ)),
+    actor: User = Depends(require_permissions(Permission.ALERTS_READ)),
     db=Depends(get_db),
 ) -> dict:
     service = AlertService(db)
@@ -43,6 +43,7 @@ def list_alerts(
         entity_type=entity_type,
         entity_id=entity_id,
         is_resolved=resolved,
+        actor=actor,
     )
     resolved_page, resolved_limit = resolve_pagination(page, limit)
     return build_paged_response(

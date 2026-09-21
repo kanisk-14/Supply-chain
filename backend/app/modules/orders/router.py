@@ -33,7 +33,7 @@ def list_orders(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     include_shipments: bool = Query(default=False),
-    _user: User = Depends(require_permissions(Permission.ORDERS_READ)),
+    actor: User = Depends(require_permissions(Permission.ORDERS_READ)),
     db=Depends(get_db),
 ) -> dict:
     service = OrderService(db)
@@ -45,6 +45,7 @@ def list_orders(
         start=start,
         end=end,
         include_shipments=include_shipments,
+        actor=actor,
     )
     resolved_page, resolved_limit = resolve_pagination(page, limit)
     return build_paged_response(

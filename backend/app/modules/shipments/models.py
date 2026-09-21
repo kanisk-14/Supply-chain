@@ -37,6 +37,11 @@ class Shipment(TimestampMixin, Base):
     created_by: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("warehouses.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     order = relationship("Order", back_populates="shipments", lazy="selectin")
     history = relationship(

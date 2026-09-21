@@ -38,7 +38,7 @@ from app.modules.shipments.schemas import (
     history_payload,
     shipment_payload,
 )
-from app.modules.users.models import User
+from app.modules.users.models import User, UserRole
 from app.modules.warehouses.repositories import WarehouseRepository
 from app.state_machines.shipment import ShipmentStatus, shipment_state_machine
 
@@ -65,7 +65,14 @@ class ShipmentService:
         is_delayed=None,
         start=None,
         end=None,
+        actor: User | None = None,
     ) -> dict:
+        if actor is not None and actor.role == UserRole.WAREHOUSE_MANAGER:
+            if actor.warehouse_id is None:
+                return {"items": [], "total": 0}
+            warehouse_id = actor.warehouse_id
+        else:
+            warehouse_id = None
         result = self.repo.list(
             page=page,
             limit=limit,
@@ -74,6 +81,7 @@ class ShipmentService:
             is_delayed=is_delayed,
             start=start,
             end=end,
+            warehouse_id=warehouse_id,
         )
         return {
             "items": [shipment_payload(s) for s in result.items],
@@ -192,6 +200,7 @@ class ShipmentService:
 
             old_status = shipment.status
             shipment.status = ShipmentStatus.IN_TRANSIT
+            shipment.warehouse_id = payload.warehouse_id
             if payload.expected_delivery_at is not None:
                 shipment.expected_delivery_at = payload.expected_delivery_at
             self.db.flush()

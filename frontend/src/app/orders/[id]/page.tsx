@@ -129,7 +129,7 @@ export default function OrderDetailsPage() {
 
   if (loading) {
     return (
-      <ProtectedRoute>
+      <ProtectedRoute requiredPermissions={["orders:read"]}>
         <AppLayout>
           <div className="flex h-64 items-center justify-center">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-600 border-t-transparent" />
@@ -141,7 +141,7 @@ export default function OrderDetailsPage() {
 
   if (!order) {
     return (
-      <ProtectedRoute>
+      <ProtectedRoute requiredPermissions={["orders:read"]}>
         <AppLayout>
           <div className="text-center py-12">
             <p className="text-sm font-semibold text-slate-700">Order not found.</p>
@@ -158,7 +158,7 @@ export default function OrderDetailsPage() {
   }
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["orders:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Top Bar */}

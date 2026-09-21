@@ -34,15 +34,22 @@ def _scm_headers(api_client, seed):
     return _headers_for(api_client, seed, UserRole.SUPPLY_CHAIN_MANAGER, "scm@ships.com")
 
 
-def _whm_headers(api_client, seed):
-    return _headers_for(api_client, seed, UserRole.WAREHOUSE_MANAGER, "wh@ships.com")
+def _whm_headers(api_client, seed, warehouse_id: int):
+    account = seed.user("wh@ships.com", role=UserRole.WAREHOUSE_MANAGER)
+    # Assign warehouse for scoping
+    with seed.session_factory() as db:
+        user = db.get(User, account["id"])
+        user.warehouse_id = warehouse_id
+        db.commit()
+    token = login(api_client, account["email"], account["password"])
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _setup(api_client, seed, catalog, stock=100):
     scm_headers = _scm_headers(api_client, seed)
-    wh_headers = _whm_headers(api_client, seed)
     supplier = catalog.supplier(code="SUP-SHP")
     warehouse = catalog.warehouse(code="WH-SHP", name="Dispatch Bay")
+    wh_headers = _whm_headers(api_client, seed, warehouse["id"])
     product = catalog.product(supplier_id=supplier["id"], sku="SKU-SHP", name="Crate")
     catalog.inventory(product_id=product["id"], warehouse_id=warehouse["id"], quantity=stock)
     return {
@@ -449,8 +456,12 @@ class TestDelayed:
         order = _confirmed_order(api_client, ctx, quantity=5)
         past = datetime.now() - timedelta(hours=6)
         future = datetime.now() + timedelta(days=1)
-        _create_shipment(api_client, ctx, order["id"], expected=past).json()["data"]
-        _create_shipment(api_client, ctx, order["id"], expected=future).json()["data"]
+        s1 = _create_shipment(api_client, ctx, order["id"], expected=past).json()["data"]
+        s2 = _create_shipment(api_client, ctx, order["id"], expected=future).json()["data"]
+
+        # Dispatch both so they have warehouse_id for WAREHOUSE_MANAGER scoping
+        _dispatch(api_client, ctx, s1["id"]).json()["data"]
+        _dispatch(api_client, ctx, s2["id"]).json()["data"]
 
         delayed = api_client.get(
             "/api/v1/shipments",
@@ -494,7 +505,11 @@ class TestShipmentReads:
         o1 = _confirmed_order(api_client, ctx, quantity=2)
         o2 = _confirmed_order(api_client, ctx, quantity=3)
         s1 = _create_shipment(api_client, ctx, o1["id"]).json()["data"]
-        _create_shipment(api_client, ctx, o2["id"]).json()["data"]
+        s2 = _create_shipment(api_client, ctx, o2["id"]).json()["data"]
+
+        # Dispatch both shipments so they have warehouse_id for WAREHOUSE_MANAGER scoping
+        _dispatch(api_client, ctx, s1["id"]).json()["data"]
+        _dispatch(api_client, ctx, s2["id"]).json()["data"]
 
         by_order = api_client.get(
             "/api/v1/shipments", params={"order_id": o1["id"]}, headers=ctx["wh"]
@@ -502,12 +517,10 @@ class TestShipmentReads:
         assert by_order.json()["meta"]["total"] == 1
         assert by_order.json()["data"][0]["id"] == s1["id"]
 
-        dispatched = _dispatch(api_client, ctx, s1["id"]).json()["data"]
         by_status = api_client.get(
             "/api/v1/shipments", params={"status": "IN_TRANSIT"}, headers=ctx["wh"]
         )
-        assert by_status.json()["meta"]["total"] == 1
-        assert by_status.json()["data"][0]["id"] == dispatched["id"]
+        assert by_status.json()["meta"]["total"] == 2
 
 
 class TestServiceTransactionality:

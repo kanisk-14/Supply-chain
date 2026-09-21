@@ -20,7 +20,7 @@ from app.modules.orders.models import Order, OrderItem
 from app.modules.orders.repositories import OrderRepository
 from app.modules.orders.schemas import OrderCreate, order_payload
 from app.modules.products.repositories import ProductRepository
-from app.modules.users.models import User
+from app.modules.users.models import User, UserRole
 from app.state_machines.order import OrderStatus, order_state_machine
 
 AUDIT_ACTIONS = {
@@ -50,7 +50,14 @@ class OrderService:
         start=None,
         end=None,
         include_shipments=False,
+        actor: User | None = None,
     ) -> dict:
+        if actor is not None and actor.role == UserRole.WAREHOUSE_MANAGER:
+            if actor.warehouse_id is None:
+                return {"items": [], "total": 0}
+            warehouse_id = actor.warehouse_id
+        else:
+            warehouse_id = None
         result = self.repo.list(
             page=page,
             limit=limit,
@@ -58,6 +65,7 @@ class OrderService:
             created_by=created_by,
             start=start,
             end=end,
+            warehouse_id=warehouse_id,
         )
         return {
             "items": [

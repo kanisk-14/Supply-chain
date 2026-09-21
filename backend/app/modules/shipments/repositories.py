@@ -40,6 +40,7 @@ class ShipmentRepository:
         is_delayed: bool | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
+        warehouse_id: int | None = None,
     ) -> ShipmentListResult:
         stmt: Select[tuple[Shipment]] = select(Shipment)
         if order_id is not None:
@@ -50,6 +51,8 @@ class ShipmentRepository:
             stmt = stmt.where(Shipment.created_at >= start)
         if end is not None:
             stmt = stmt.where(Shipment.created_at <= end)
+        if warehouse_id is not None:
+            stmt = stmt.where(Shipment.warehouse_id == warehouse_id)
         if is_delayed is not None:
             now = utcnow()
             # DELAYED is never persisted — it is derived at query time:

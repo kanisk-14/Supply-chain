@@ -44,7 +44,7 @@ from app.modules.inventory.schemas import (
     transaction_payload,
 )
 from app.modules.products.repositories import ProductRepository
-from app.modules.users.models import User
+from app.modules.users.models import User, UserRole
 from app.modules.warehouses.models import Warehouse
 from app.modules.warehouses.repositories import WarehouseRepository
 
@@ -60,7 +60,20 @@ class InventoryService:
 
     # ---- reads ----
 
-    def list(self, *, page, limit, product_id=None, warehouse_id=None, below_threshold=None) -> dict:
+    def list(
+        self,
+        *,
+        page,
+        limit,
+        product_id=None,
+        warehouse_id=None,
+        below_threshold=None,
+        actor: User | None = None,
+    ) -> dict:
+        if actor is not None and actor.role == UserRole.WAREHOUSE_MANAGER:
+            if actor.warehouse_id is None:
+                return {"items": [], "total": 0}
+            warehouse_id = actor.warehouse_id
         result = self.repo.list(
             page=page,
             limit=limit,
@@ -92,7 +105,12 @@ class InventoryService:
         txn_type=None,
         start=None,
         end=None,
+        actor: User | None = None,
     ) -> dict:
+        if actor is not None and actor.role == UserRole.WAREHOUSE_MANAGER:
+            if actor.warehouse_id is None:
+                return {"items": [], "total": 0}
+            warehouse_id = actor.warehouse_id
         result = self.repo.list_transactions(
             page=page,
             limit=limit,

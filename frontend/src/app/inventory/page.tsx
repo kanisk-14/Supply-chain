@@ -31,6 +31,12 @@ import {
 export default function InventoryPage() {
   const { hasPermission } = useAuth();
   const canWriteInventory = hasPermission("inventory:write");
+  // WAREHOUSE_MANAGER lacks products:read and ANALYST lacks both master-data
+  // reads: only request dropdown data the role is authorized for so the page
+  // never fires requests that 403.
+  const canReadProducts = hasPermission("products:read");
+  const canReadTransactions = hasPermission("inventory:transactions:read");
+  const canReadWarehouses = hasPermission("warehouses:read");
 
   const [activeTab, setActiveTab] = useState<"stock" | "transactions">("stock");
 
@@ -78,8 +84,12 @@ export default function InventoryPage() {
   const fetchProductsAndWarehouses = async () => {
     try {
       const [prodRes, whRes] = await Promise.all([
-        productsApi.list({ limit: 100 }),
-        warehousesApi.list({ limit: 100 }),
+        canReadProducts
+          ? productsApi.list({ limit: 100 })
+          : Promise.resolve({ data: [] as Product[] }),
+        canReadWarehouses
+          ? warehousesApi.list({ limit: 100 })
+          : Promise.resolve({ data: [] as Warehouse[] }),
       ]);
       setProducts(prodRes.data || []);
       setWarehouses(whRes.data || []);
@@ -131,12 +141,12 @@ export default function InventoryPage() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "stock") {
-      loadStock(1, stockMeta.limit);
-    } else {
+    if (activeTab === "transactions" && canReadTransactions) {
       loadTransactions(1, txMeta.limit);
+    } else {
+      loadStock(1, stockMeta.limit);
     }
-  }, [activeTab, loadStock, loadTransactions, stockMeta.limit, txMeta.limit]);
+  }, [activeTab, canReadTransactions, loadStock, loadTransactions, stockMeta.limit, txMeta.limit]);
 
   // Adjust Form Submit
   const handleAdjustSubmit = async (e: React.FormEvent) => {
@@ -373,7 +383,7 @@ export default function InventoryPage() {
   ];
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["inventory:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Header */}
@@ -425,6 +435,7 @@ export default function InventoryPage() {
             >
               <Boxes className="h-4 w-4" /> Current Warehouse Stock
             </button>
+            {canReadTransactions && (
             <button
               onClick={() => setActiveTab("transactions")}
               className={`flex items-center gap-2 px-4 py-3 text-xs font-medium border-b-2 transition-colors ${
@@ -435,6 +446,7 @@ export default function InventoryPage() {
             >
               <History className="h-4 w-4" /> Stock Movement History
             </button>
+            )}
           </div>
 
           {/* Filters Bar */}
@@ -512,17 +524,7 @@ export default function InventoryPage() {
           </div>
 
           {/* Table Display */}
-          {activeTab === "stock" ? (
-            <DataTable
-              columns={stockColumns}
-              data={inventory}
-              isLoading={stockLoading}
-              meta={stockMeta}
-              onPageChange={(p) => loadStock(p, stockMeta.limit)}
-              onLimitChange={(l) => loadStock(1, l)}
-              emptyMessage="No inventory matches the selected criteria."
-            />
-          ) : (
+          {activeTab === "transactions" && canReadTransactions ? (
             <DataTable
               columns={txColumns}
               data={transactions}
@@ -531,6 +533,16 @@ export default function InventoryPage() {
               onPageChange={(p) => loadTransactions(p, txMeta.limit)}
               onLimitChange={(l) => loadTransactions(1, l)}
               emptyMessage="No stock transactions found."
+            />
+          ) : (
+            <DataTable
+              columns={stockColumns}
+              data={inventory}
+              isLoading={stockLoading}
+              meta={stockMeta}
+              onPageChange={(p) => loadStock(p, stockMeta.limit)}
+              onLimitChange={(l) => loadStock(1, l)}
+              emptyMessage="No inventory matches the selected criteria."
             />
           )}
 

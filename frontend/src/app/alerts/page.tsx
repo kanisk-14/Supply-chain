@@ -133,7 +133,7 @@ export default function AlertsPage() {
   ];
 
   return (
-    <ProtectedRoute>
+    <ProtectedRoute requiredPermissions={["alerts:read"]}>
       <AppLayout>
         <div className="space-y-6">
           {/* Header */}
